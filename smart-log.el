@@ -225,8 +225,8 @@ This option is passed to `format-time-string'."
     )
   "Considerable log format alist each item has (NAME REGION-FN TO-DATE-FN)
 NAME
-SAMPLE-FN is called at beginning of line and return region of logged time in buffer.
-CONVERT-FN accept one string arg and return `current-date' format.
+:sample-fn is called at beginning of line and return region of logged time in buffer.
+:convert-fn accept one string arg and return `current-date' format.
 ")
 
 (defun smart-log--overlay-at (point)
@@ -234,15 +234,15 @@ CONVERT-FN accept one string arg and return `current-date' format.
         if (overlay-get o 'smart-log-time)
         return o))
 
-(defun smart-log--format-current-line (sample convert)
-  (let ((region (funcall sample)))
+(defun smart-log--format-current-line (sample-fn convert-fn)
+  (let ((region (funcall sample-fn)))
     (when region
       (unless (smart-log--overlay-at (car region))
         (condition-case nil
             (let* ((start (car region))
                    (end (cdr region))
                    (str (buffer-substring start end))
-                   (date (funcall convert str))
+                   (date (funcall convert-fn str))
                    (ov (make-overlay start end))
                    (text (smart-log--format-time date)))
               (overlay-put ov 'smart-log-time t)
@@ -255,14 +255,14 @@ CONVERT-FN accept one string arg and return `current-date' format.
           (error nil)))))
   (forward-line 1))
 
-(defun smart-log--line-date (sample convert)
-  (let ((region (funcall sample)))
+(defun smart-log--line-date (sample-fn convert-fn)
+  (let ((region (funcall sample-fn)))
     (when region
       (condition-case nil
           (let* ((start (car region))
                  (end (cdr region))
                  (str (buffer-substring start end))
-                 (date (funcall convert str)))
+                 (date (funcall convert-fn str)))
             date)
         (error nil)))))
 
@@ -308,7 +308,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
          (wr (regexp-opt ws))
          (2d "[0-9]\\{1,2\\}")
          (regexp (format
-                  "^\\(%s, +\\)?%s +%s %s:%s:%s"
+                  ".*?\\(%s, +\\)?%s +%s %s:%s:%s"
                   wr mr 2d 2d 2d 2d)))
     regexp))
 
@@ -381,7 +381,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
 (defconst smart-log-general-date-regexp
   (let ((2d "[0-9]\\{1,2\\}"))
     (format
-     (concat "\\([0-9]\\{4\\}\\)[-/.]\\(%s\\)[-/.]\\(%s\\)"
+     (concat ".*?\\([0-9]\\{4\\}\\)[-/.]\\(%s\\)[-/.]\\(%s\\)"
              "[ \t]+"
              "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
              "\\(?:[:.]\\([0-9]+\\)\\)?")
@@ -408,7 +408,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
 (defconst smart-log-general-locale-date-regexp
   (let ((2d "[0-9]\\{1,2\\}"))
     (format
-     (concat "\\([0-9]\\{2,4\\}\\)[-/.]\\(%s\\)[-/.]\\([0-9]\\{2,4\\}\\)"
+     (concat ".*?\\([0-9]\\{2,4\\}\\)[-/.]\\(%s\\)[-/.]\\([0-9]\\{2,4\\}\\)"
              "[ \t]+"
              "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
              "\\(?:[:.]\\([0-9]+\\)\\)?")
@@ -513,7 +513,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
     (delete-region (point) (line-beginning-position 2))))
 
 (defun smart-log--valid-formatters ()
-  ;; 1. 
+  ;; 1. todo
   (goto-char (point-min))
   (loop for fmtr in smart-log--unformatters
         if (funcall (plist-get fmtr :sample-fn))
@@ -527,8 +527,8 @@ CONVERT-FN accept one string arg and return `current-date' format.
 
 (defun smart-log--score-formatter (formatter)
   (let ((scores '(1))
-        (sample (plist-get formatter :sample-fn))
-        (convert (plist-get formatter :convert-fn))
+        (sample-fn (plist-get formatter :sample-fn))
+        (convert-fn (plist-get formatter :convert-fn))
         (mtime (plist-get smart-log--plist :mtime))
         (valid 0)
         (all 0)
@@ -537,7 +537,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
     (while (not (eobp))
       (setq all (1+ all))
       (ignore-errors
-        (let ((date (smart-log--line-date sample convert)))
+        (let ((date (smart-log--line-date sample-fn convert-fn)))
           (setq dates (cons date dates))
           (setq valid (1+ valid))))
       (forward-line 1))
@@ -582,7 +582,7 @@ CONVERT-FN accept one string arg and return `current-date' format.
       (let ((region (cons (window-start) (window-end))))
         (unless (equal smart-log--formatted-region region)
           (unless smart-log--plist
-            (smart-log--create-plist))
+            (smart-log--set-plist))
           (when smart-log--plist
             (let ((plist smart-log--plist))
               (save-excursion
@@ -593,11 +593,25 @@ CONVERT-FN accept one string arg and return `current-date' format.
                    (plist-get plist :sample-fn) (plist-get plist :convert-fn))))
               (setq smart-log--formatted-region region))))))))
 
-(defun smart-log--create-plist ()
+(defun smart-log--set-plist ()
   (smart-log--prepare-file-plist buffer-file-name)
   ;;TODO buffer is too huge
   ;; TODO when unable compute valid formatter
-  (let ((fmtr (smart-log--compute-formatter)))
+  (let ((fmtr 
+         ;; TODO refactor
+         (let ((buf1 (current-buffer)))
+           (with-temp-buffer
+             (let ((buf2 (current-buffer))
+                   mtime)
+               (with-current-buffer buf1
+                 (save-excursion
+                   (goto-char (point-min))
+                   (append-to-buffer buf2 (point-min) (line-beginning-position 3))
+                   (goto-char (point-max))
+                   (append-to-buffer buf2 (line-beginning-position -5) (point-max))
+                   (setq mtime (visited-file-modtime))))
+               (setq smart-log--plist (list :mtime (float-time mtime))))
+             (smart-log--compute-formatter)))))
     (setq smart-log--plist
           (smart-log-merge-properties smart-log--plist fmtr))))
 
