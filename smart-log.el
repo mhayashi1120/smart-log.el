@@ -1,4 +1,4 @@
-;;; smart-log.el --- smart log mode with intepretting miscellaneous format
+;;; smart-log.el --- Major mode with intepretting miscellaneous time format
 
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
 ;; Keywords: log
