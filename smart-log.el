@@ -2,9 +2,10 @@
 
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
 ;; Keywords: log
-;; URL: todo http://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
+;; URL: https://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
 ;; Emacs: todo GNU Emacs 22 or later
 ;; Version: 0.0.0
+;; Package-Requires: ()
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -31,9 +32,17 @@
 ;; * key of toggle auto read
 ;; * smart-log-open-file
 ;;   handling huge log file
-;; * autoload
+;; * sample of settings `auto-mode-alist'
+;; (add-to-list 'auto-mode-alist 
+;;               '("\\.log\\(?:\\.[0-9]+\\)?\\(?:\\.\\(?:gz\\|bz2\\)\\)?$"
+;;                 . smart-log-mode))
+;; * sample of setting .emacs
+;;   (autoload 'smart-log-mode "smart-log" 
+;;           "Major mode with intepretting miscellaneous time format" t)
+;; * inhibit save-buffer when restricted mode (huge file narrowing)
+;; * autorevert.el
 
-;; sample of settings `auto-mode-alist'
+;;; Code:
 
 (eval-when-compile
   (require 'cl))
@@ -67,14 +76,24 @@ This option is passed to `format-time-string'."
   :group 'smart-log
   :type 'boolean)
 
+(defcustom smart-log-mode-hook nil
+  "Run end of `smart-log-mode'.
+
+\(add-hook 'smart-log-mode-hook 'turn-on-auto-revert-tail-mode)
+ TODO or create some option? only last page is valid..
+"
+  :group 'smart-log
+  :type 'boolean)
+
 (defvar smart-log--plist nil)
 (make-variable-buffer-local 'smart-log--plist)
 
 (defvar smart-log--show-format nil)
 (make-variable-buffer-local 'smart-log--show-format)
 
-(defvar smart-log--buffer-bytes nil)
-(make-variable-buffer-local 'smart-log--buffer-bytes)
+;;TODO not yet
+(defvar smart-log--paging-info nil)
+(make-variable-buffer-local 'smart-log--paging-info)
 
 (defvar smart-log-mode-map nil)
 
@@ -82,44 +101,55 @@ This option is passed to `format-time-string'."
   (let ((map (make-sparse-keymap)))
 
     (define-key map "g" 'revert-buffer)
+    
     (define-key map "\C-c\C-t" 'smart-log-toggle-time-format)
 
     (setq smart-log-mode-map map)))
 
 ;;;###autoload
-(defun smart-log-mode ()
+(defun smart-log-find-file (file)
+  (interactive "fLog File: ")
+  ;;TODO
+  )
+
+;;;###autoload
+(define-derived-mode smart-log-mode nil
+  nil
   "Major mode to view log file"
-  (interactive)
-  (unless (and buffer-file-name
-               (file-exists-p buffer-file-name))
-    (error "Invalid log file"))
-  (kill-all-local-variables)
-  (setq major-mode 'smart-log-mode)
-  (use-local-map smart-log-mode-map)
-  (setq mode-name smart-log--mode-line)
-  ;; font lock
-  (font-lock-add-keywords nil smart-log-font-lock-keywords t)
-  (setq font-lock-keywords-case-fold-search t)
-  (set (make-local-variable 'font-lock-keywords-only) t)
-  (setq revert-buffer-function 'smart-log-revert-buffer)
-  (set (make-local-variable 'isearch-search-fun-function)
-       'smart-log--isearch-function)
-  (setq smart-log--show-format t)
-  (add-hook 'kill-buffer-hook
-            'smart-log--cleanup nil t)
-  (view-mode 1)
-  (setq buffer-read-only t)
-  (smart-log--auto-read-start)
-  (cancel-function-timers 'smart-log--delayed-format)
-  ;; TODO delay after 0.5 second
-  ;;  first time `find-file', `window-start' and `window-end' point
-  ;;  to wrong region.
-  (run-with-timer 0.5 0.5 'smart-log--delayed-format))
+  (if (not (and buffer-file-name
+                (file-exists-p buffer-file-name)))
+      ;; when opening 0 byte file temporarily
+      ;; fallback to basic mode
+      (fundamental-mode)
+    (setq mode-name smart-log--mode-line)
+    (set (make-local-variable 'font-lock-defaults)
+         '(smart-log-font-lock-keywords t t nil beginning-of-line))
+    (set (make-local-variable 'revert-buffer-function)
+         'smart-log-revert-buffer)
+    (setq smart-log--show-format t)
+    (add-hook 'kill-buffer-hook
+              'smart-log--cleanup nil t)
+    (view-mode 1)
+    (setq buffer-read-only t)
+    (smart-log--set-plist)
+    (cancel-function-timers 'smart-log--delayed-format)
+    ;; delay after 0.5 second
+    ;; Just after `find-file', `window-start' and `window-end' point to
+    ;; wrong region.
+    (run-with-timer 0.5 0.5 'smart-log--delayed-format)))
 
 (defvar smart-log--mode-line
-  '("Smart Log"
+  '("Smart-Log"
     (:eval (or (let ((type (plist-get smart-log--plist :name)))
-                 (and type (format " [%s]" type)))
+                 (and type
+                      (propertize 
+                       (format " [%s]" type)
+                       'face 'smart-log-time-face)))
+               ""))
+    ;;TODO
+    (:eval (or (and (local-variable-p 'auto-revert-tail-pos)
+                    (let ((pos auto-revert-tail-pos))
+                      (and pos (format " %s" pos))))
                ""))))
 
 (defun smart-log-revert-buffer (&optional ignore-auto noconfirm)
@@ -127,11 +157,56 @@ This option is passed to `format-time-string'."
                (save-restriction
                  (widen)
                  (point-max)))))
-    (let (revert-buffer-function)
-      (revert-buffer nil t t))
-    (setq smart-log--buffer-bytes nil)
-    (view-mode 1)
-    (setq buffer-read-only t)))
+    (let ((line (line-number-at-pos (point))))
+      (destructuring-bind (start end modtime)
+          (let ((inhibit-read-only t)
+                (buffer-undo-list t)
+                (coding-system-for-read
+                 (and
+                  ;;TODO old emacs doesn't have this
+                  buffer-file-coding-system-explicit
+                  (car buffer-file-coding-system-explicit))))
+            (smart-log--read-file buffer-file-name 0 nil t))
+        (plist-put smart-log--plist :max-bytes end)
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (set-buffer-modified-p nil)))))
+
+(defun smart-log--read-file (file start &optional end replace)
+  (let* ((tramp-cache-inhibit-cache t)
+         (attr (file-attributes file))
+         (modtime (nth 5 attr)))
+    (setq end 
+          (if end
+              (max end (nth 7 attr))
+            (nth 7 attr)))
+    (cond
+     ((< start 0)
+      (signal 'args-out-of-range (list start)))
+     ((> start end)
+      (signal 'args-out-of-range (list start end)))
+     ((= start end))                    ; simply ignore
+     (t
+      (set-visited-file-modtime modtime)
+      (insert-file-contents file nil start end replace)))
+    (list start end modtime)))
+
+(defun smart-log-switch-format ()
+  "Switch logging time format manually."
+  (interactive)
+  (let* ((source (mapcar 
+                  (lambda (x)
+                    (prin1-to-string (plist-get x :name))) 
+                  smart-log--unformatters))
+         (key (let ((completion-ignore-case t))
+                (completing-read "Format: " source nil t)))
+         (fmtr (loop with key = (intern key)
+                     for fmtr in smart-log--unformatters
+                     if (eq (plist-get fmtr :name) key)
+                     return fmtr)))
+    (setq smart-log--plist
+          (smart-log-merge-properties smart-log--plist fmtr))
+    (smart-log-redisplay-time)))
 
 (defun smart-log-toggle-time-format ()
   "Toggle between displaying time format or raw text."
@@ -147,7 +222,9 @@ This option is passed to `format-time-string'."
              (overlay-put ov new disp)))
       (overlay-put ov old nil))))
 
-(defvar smart-log--read-timer nil)
+(defun smart-log-redisplay-time ()
+  (remove-overlays nil nil 'smart-log-time t)
+  (setq smart-log--formatted-region nil))
 
 (defun smart-log--cleanup ()
   (loop for b in (buffer-list)
@@ -155,71 +232,37 @@ This option is passed to `format-time-string'."
                 (eq (buffer-local-value 'major-mode b) 'smart-log-mode))
         return nil
         finally (progn
-                  ;; kill timers if smart-log-mode buffer is not exists.
-                  (when smart-log--read-timer
-                    (cancel-timer smart-log--read-timer)
-                    (setq smart-log--read-timer nil))
+                  ;; kill timer if smart-log-mode buffer is not exists.
                   (cancel-function-timers 'smart-log--delayed-format))))
-
-(defun smart-log--auto-read-start ()
-  (unless smart-log--read-timer
-    (setq smart-log--read-timer
-          (run-with-timer
-           1 1 'smart-log--auto-read-timer)))
-  (timer-activate smart-log--read-timer))
-
-(defun smart-log--auto-read-timer ()
-  (with-local-quit
-    (when (eq major-mode 'smart-log-mode)
-      (unless (file-remote-p buffer-file-name)
-        (smart-log-read-new-entries)))))
-
-(defun smart-log-read-new-entries ()
-  (let* ((cs buffer-file-coding-system)
-         (next (or smart-log--buffer-bytes
-                   (length (encode-coding-region
-                            (point-min) (point-max) cs t)))))
-    (setq smart-log--buffer-bytes next)
-    (let* ((attr (file-attributes buffer-file-name))
-           (size (nth 7 attr))
-           (eobp (eobp)))
-      (when (> size next)
-        (save-excursion
-          (save-restriction
-            (widen)
-            (goto-char (point-max))
-            (let* ((coding-system-for-read cs)
-                   (inhibit-read-only t)
-                   (point (point-max))
-                   (flag (buffer-modified-p)))
-              (insert-file-contents buffer-file-name nil next size)
-              (setq smart-log--buffer-bytes size)
-              (set-buffer-modified-p flag))))
-        (when eobp
-          (goto-char (point-max)))))))
 
 (defvar smart-log--unformatters
   '(
-    ;; djb tools
+    ;; djb tools (@400000004f90304a3abfd92c => 2012-04-20 00:33:20)
     (:name tai64n :sample-fn smart-log-tai64n
            :convert-fn smart-log-tai64n->date)
-    ;;TODO
+    ;; (May 20 00:05:02 => 2012-05-20 00:05:02)
+    ;; TODO this format may indicate wrong year. 
+    ;;   when log file have entries that over a year.
     (:name rfctime :sample-fn smart-log-rfc822-time
            :convert-fn smart-log-rfc822-time->date)
+    ;; (01/02/03 04:05:06 => 2001-02-03 04:05:06)
     (:name general-jp :sample-fn smart-log-general-locale-date
            :convert-fn smart-log-general-locale-jp->date)
+    ;; (01/02/03 04:05:06 => 2003-02-01 04:05:06)
     (:name general-en :sample-fn smart-log-general-locale-date
            :convert-fn smart-log-general-locale-en->date)
+    ;; (01/02/03 04:05:06 => 2003-01-02 04:05:06)
     (:name general-us :sample-fn smart-log-general-locale-date
            :convert-fn smart-log-general-locale-us->date)
     (:name general :sample-fn smart-log-general-date
            :convert-fn smart-log-general-date->date)
-    ;; apache ...
+    ;; apache (20/May/2012:07:35:25 +0900 => 2012-05-20 07:35:25)
     (:name CLF :sample-fn smart-log-clf-date
            :convert-fn smart-log-clf-date->date)
+    ;; apache error log (Sun May 20 07:35:25 2012 => 2012-05-20 07:35:25)
     (:name apache-error-log :sample-fn smart-log-apache-error-log
            :convert-fn smart-log-apache-error-log->date)
-    ;; squid ...
+    ;; squid or else... (1337993229 => 2012-05-26 09:47:09)
     (:name epoch :sample-fn smart-log-epoch
            :convert-fn smart-log-epoch->date)
     )
@@ -246,8 +289,6 @@ NAME
                    (ov (make-overlay start end))
                    (text (smart-log--format-time date)))
               (overlay-put ov 'smart-log-time t)
-              ;;TODO no meaning?
-              (overlay-put ov 'isearch-open-invisible t)
               (if smart-log--show-format
                   (overlay-put ov 'display text)
                 (overlay-put ov 'smart-log-hiden-display text))
@@ -280,11 +321,11 @@ NAME
 (defun smart-log--prepare-file-plist (file)
   (let* ((attr (file-attributes file))
          (mtime (float-time (nth 5 attr)))
-         (year (format-time-string "%Y" (nth 5 attr))))
+         (year (nth 5 (decode-time (nth 5 attr)))))
     (setq smart-log--plist
           ;;TODO update mtime after revert or read new-entries
           (list :mtime mtime
-                :year (string-to-number year)))))
+                :base-year year))))
 
 ;;;
 ;;; font lock
@@ -294,13 +335,18 @@ NAME
 (defvar smart-log-debug-face 'smart-log-debug-face)
 
 (defvar smart-log-font-lock-keywords
-  '(("\\berror\\b" 0 smart-log-error-face)
+  `((
+     ,(concat "\\b" 
+              (regexp-opt '("error" "warning" "warn" "caution" "fatal") t)
+              "\\b")
+     0 smart-log-error-face)
     ("\\bdebug\\b" 0 smart-log-debug-face)))
 
 ;;;
 ;;; rfc822
 ;;;
 
+;;TODO eval-when-compile
 (defconst smart-log-rfc822-time-regexp
   (let* ((ms (loop repeat 12 for m in parse-time-months collect (car m)))
          (ws (loop repeat 7 for m in parse-time-weekdays collect (car m)))
@@ -308,7 +354,9 @@ NAME
          (wr (regexp-opt ws))
          (2d "[0-9]\\{1,2\\}")
          (regexp (format
-                  "^.\\{,64\\}\\(%s, +\\)?%s +%s %s:%s:%s"
+                  ;; ignore some line header characters.
+                  ;; TODO sample of log format
+                  "^.\\{,16\\}\\(%s, +\\)?%s +%s %s:%s:%s"
                   wr mr 2d 2d 2d 2d)))
     regexp))
 
@@ -321,8 +369,7 @@ NAME
       (parse-time-string str)
     (encode-time sec min hour day month
                  (or year
-                     ;;TODO over the year log file
-                     (plist-get smart-log--plist :year)))))
+                     (plist-get smart-log--plist :base-year)))))
 
 ;;;
 ;;; epoch
@@ -379,13 +426,14 @@ NAME
 ;;;
 
 (defconst smart-log-general-date-regexp
-  (let ((2d "[0-9]\\{1,2\\}"))
-    (format
-     (concat ".\\{,64\\}\\([0-9]\\{4\\}\\)[-/.]\\(%s\\)[-/.]\\(%s\\)"
-             "[ \t]+"
-             "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
-             "\\(?:[:.]\\([0-9]+\\)\\)?")
-     2d 2d 2d 2d 2d)))
+  (eval-when-compile
+    (let ((2d "[0-9]\\{1,2\\}"))
+      (format
+       (concat ".\\{,64\\}\\([0-9]\\{4\\}\\)[-/.]\\(%s\\)[-/.]\\(%s\\)"
+               "[ \t]+"
+               "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
+               "\\(?:[:.]\\([0-9]+\\)\\)?")
+       2d 2d 2d 2d 2d))))
 
 (defun smart-log-general-date ()
   (and (looking-at smart-log-general-date-regexp)
@@ -406,13 +454,14 @@ NAME
 
 ;; http://www.kanzaki.com/docs/html/dtf.html
 (defconst smart-log-general-locale-date-regexp
-  (let ((2d "[0-9]\\{1,2\\}"))
-    (format
-     (concat ".\\{,64\\}\\([0-9]\\{2,4\\}\\)[-/.]\\(%s\\)[-/.]\\([0-9]\\{2,4\\}\\)"
-             "[ \t]+"
-             "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
-             "\\(?:[:.]\\([0-9]+\\)\\)?")
-     2d 2d 2d 2d 2d)))
+  (eval-when-compile
+    (let ((2d "[0-9]\\{1,2\\}"))
+      (format
+       (concat ".\\{,64\\}\\([0-9]\\{2,4\\}\\)[-/.]\\(%s\\)[-/.]\\([0-9]\\{2,4\\}\\)"
+               "[ \t]+"
+               "\\(%s\\):\\(%s\\)\\(?::\\(%s\\)\\)?"
+               "\\(?:[:.]\\([0-9]+\\)\\)?")
+       2d 2d 2d 2d))))
 
 (defun smart-log-general-locale-date ()
   (and (looking-at smart-log-general-locale-date-regexp)
@@ -426,7 +475,7 @@ NAME
               (year (let ((tmp (funcall getter (1+ yi))))
                       (cond
                        ((> tmp 100) tmp)
-                       ((< (plist-get smart-log--plist :year) 2000)
+                       ((< (plist-get smart-log--plist :base-year) 2000)
                         (+ 1900 tmp))
                        (t
                         (+ 2000 tmp)))))
@@ -450,9 +499,26 @@ NAME
 ;;; Apache Error Log
 ;;;
 
+(defconst smart-log--apache-error-log-re
+  (eval-when-compile
+    (concat "\\["
+            "\\("
+            "[a-zA-Z]\\{3\\}"
+            " "
+            "[a-zA-Z]\\{3\\}"
+            " "
+            "[0-9]\\{1,2\\}"
+            " "
+            "[0-9:]+"
+            " "
+            "[0-9]\\{4\\}"
+            "\\)"
+            "\\]"
+            )))
+
 (defun smart-log-apache-error-log ()
   ;;FIXME regexp
-  (and (looking-at "\\[\\([a-zA-Z]\\{3\\} [a-zA-Z]\\{3\\} [0-9]\\{1,2\\} [0-9:]+ [0-9]\\{4\\}\\)\\]")
+  (and (looking-at smart-log--apache-error-log-re)
        (cons (match-beginning 1) (match-end 1))))
 
 (defun smart-log-apache-error-log->date (str)
@@ -581,17 +647,16 @@ NAME
     (when (eq major-mode 'smart-log-mode)
       (let ((region (cons (window-start) (window-end))))
         (unless (equal smart-log--formatted-region region)
-          (unless smart-log--plist
-            (smart-log--set-plist))
-          (when smart-log--plist
-            (let ((plist smart-log--plist))
+          (let* ((plist smart-log--plist)
+                 (sample-fn (plist-get plist :sample-fn))
+                 (convert-fn (plist-get plist :convert-fn)))
+            (when (and sample-fn convert-fn)
               (save-excursion
                 (goto-char (car region))
                 (while (and (<= (point) (cdr region))
                             (not (eobp)))
-                  (smart-log--format-current-line
-                   (plist-get plist :sample-fn) (plist-get plist :convert-fn))))
-              (setq smart-log--formatted-region region))))))))
+                  (smart-log--format-current-line sample-fn convert-fn))))
+            (setq smart-log--formatted-region region)))))))
 
 (defun smart-log--set-plist ()
   (smart-log--prepare-file-plist buffer-file-name)
@@ -622,100 +687,6 @@ NAME
                  (value (cadr ps)))
              (plist-put prop name value))
         finally return prop))
-
-;;;
-;;; Handling isearch
-;;;
-
-(defun smart-log--iwsearch-forward (word &optional bound noerror _)
-  (smart-log--iresearch-forward (concat "\\b" word "\\b") bound noerror _))
-
-(defun smart-log--iwsearch-backward (word &optional bound noerror _)
-  (smart-log--iresearch-backward (concat "\\b" word "\\b") bound noerror _))
-
-(defun smart-log--iwlsearch-forward (word &optional bound noerror _)
-  (smart-log--iresearch-forward (concat "\\b" word) bound noerror _))
-
-(defun smart-log--iwlsearch-backward (word &optional bound noerror _)
-  (smart-log--iresearch-backward (concat "\\b" word) bound noerror _))
-
-(defun smart-log--isearch-function ()
-  (cond
-   (isearch-word
-    (if (or isearch-nonincremental
-            (eq (length isearch-string)
-                (length (isearch-string-state (car isearch-cmds)))))
-        (if isearch-forward 'smart-log--iwsearch-forward 'smart-log--iwsearch-backward)
-      (if isearch-forward 'smart-log--iwlsearch-forward 'smart-log--iwlsearch-backward)))
-   (isearch-regexp
-    (if isearch-forward 'smart-log--iresearch-forward 'smart-log--iresearch-backward))
-   (t
-    (if isearch-forward 'smart-log--isearch-forward 'smart-log--isearch-backward))))
-
-(defun smart-log--isearch-forward (string &optional bound noerror _)
-  (smart-log--iresearch-forward (regexp-quote string) bound noerror _))
-
-;;TODO cannot search text over overlay and text
-;;  e.g. 12:34:45 hoge.htm
-;;     "12:34:45 hoge" regexp fails
-(defun smart-log--iresearch-forward (regexp &optional bound noerror _)
-  (let* ((start (point))
-         (text-pos (re-search-forward regexp bound t))
-         (mdata (match-data))
-         (point start)
-         (ovs (overlays-in start (or text-pos (point-max))))
-         (sorted (sort ovs (lambda (x y) (< (overlay-start x) (overlay-start y)))))
-         display-ov)
-    (catch 'done
-      (dolist (ov sorted)
-        (let ((string (overlay-get ov 'display)))
-          (when (and (not (eq (overlay-start ov) (overlay-end ov)))
-                     string (string-match regexp string))
-            (setq mdata (list (overlay-start ov) (overlay-end ov))
-                  display-ov ov)
-              (throw 'done t)))))
-    (cond
-     (display-ov
-      (goto-char (overlay-end display-ov))
-      (set-match-data mdata)
-      (overlay-end display-ov))
-     (text-pos
-      (set-match-data mdata)
-      text-pos)
-     ((not noerror) (error "Search failed \"%s\"" regexp))
-     (t
-      (set-match-data nil)))))
-
-(defun smart-log--isearch-backward (string &optional bound noerror _)
-  (smart-log--iresearch-backward (regexp-quote string) bound noerror _))
-
-(defun smart-log--iresearch-backward (regexp &optional bound noerror _)
-  (let* ((end (point))
-         (text-pos (re-search-backward regexp bound t))
-         (mdata (match-data))
-         (point end)
-         (ovs (overlays-in (or text-pos (point-min)) end))
-         (sorted (sort ovs (lambda (x y) (> (overlay-start x) (overlay-start y)))))
-         display-ov)
-    (catch 'done
-      (dolist (ov sorted)
-        (let ((string (overlay-get ov 'display)))
-          (when (and (not (eq (overlay-start ov) (overlay-end ov)))
-                     string (string-match regexp string))
-            (setq mdata (list (overlay-start ov) (overlay-end ov))
-                  display-ov ov)
-              (throw 'done t)))))
-    (cond
-     (display-ov
-      (goto-char (overlay-start display-ov))
-      (set-match-data mdata)
-      (overlay-start display-ov))
-     (text-pos
-      (set-match-data mdata)
-      text-pos)
-     ((not noerror) (error "Search failed \"%s\"" regexp))
-     (t
-      (set-match-data nil)))))
 
 (provide 'smart-log)
 
