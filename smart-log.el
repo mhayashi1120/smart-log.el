@@ -33,11 +33,11 @@
 ;; * smart-log-open-file
 ;;   handling huge log file
 ;; * sample of settings `auto-mode-alist'
-;; (add-to-list 'auto-mode-alist 
+;; (add-to-list 'auto-mode-alist
 ;;               '("\\.log\\(?:\\.[0-9]+\\)?\\(?:\\.\\(?:gz\\|bz2\\)\\)?$"
 ;;                 . smart-log-mode))
 ;; * sample of setting .emacs
-;;   (autoload 'smart-log-mode "smart-log" 
+;;   (autoload 'smart-log-mode "smart-log"
 ;;           "Major mode with intepretting miscellaneous time format" t)
 ;; * inhibit save-buffer when restricted mode (huge file narrowing)
 ;; * autorevert.el
@@ -101,7 +101,7 @@ This option is passed to `format-time-string'."
   (let ((map (make-sparse-keymap)))
 
     (define-key map "g" 'revert-buffer)
-    
+
     (define-key map "\C-c\C-t" 'smart-log-toggle-time-format)
 
     (setq smart-log-mode-map map)))
@@ -142,7 +142,7 @@ This option is passed to `format-time-string'."
   '("Smart-Log"
     (:eval (or (let ((type (plist-get smart-log--plist :name)))
                  (and type
-                      (propertize 
+                      (propertize
                        (format " [%s]" type)
                        'face 'smart-log-time-face)))
                ""))
@@ -176,7 +176,7 @@ This option is passed to `format-time-string'."
   (let* ((tramp-cache-inhibit-cache t)
          (attr (file-attributes file))
          (modtime (nth 5 attr)))
-    (setq end 
+    (setq end
           (if end
               (max end (nth 7 attr))
             (nth 7 attr)))
@@ -194,9 +194,9 @@ This option is passed to `format-time-string'."
 (defun smart-log-switch-format ()
   "Switch logging time format manually."
   (interactive)
-  (let* ((source (mapcar 
+  (let* ((source (mapcar
                   (lambda (x)
-                    (prin1-to-string (plist-get x :name))) 
+                    (prin1-to-string (plist-get x :name)))
                   smart-log--unformatters))
          (key (let ((completion-ignore-case t))
                 (completing-read "Format: " source nil t)))
@@ -241,7 +241,7 @@ This option is passed to `format-time-string'."
     (:name tai64n :sample-fn smart-log-tai64n
            :convert-fn smart-log-tai64n->date)
     ;; (May 20 00:05:02 => 2012-05-20 00:05:02)
-    ;; TODO this format may indicate wrong year. 
+    ;; TODO this format may indicate wrong year.
     ;;   when log file have entries that over a year.
     (:name rfctime :sample-fn smart-log-rfc822-time
            :convert-fn smart-log-rfc822-time->date)
@@ -336,7 +336,7 @@ NAME
 
 (defvar smart-log-font-lock-keywords
   `((
-     ,(concat "\\b" 
+     ,(concat "\\b"
               (regexp-opt '("error" "warning" "warn" "caution" "fatal") t)
               "\\b")
      0 smart-log-error-face)
@@ -662,7 +662,7 @@ NAME
   (smart-log--prepare-file-plist buffer-file-name)
   ;;TODO buffer is too huge
   ;; TODO when unable compute valid formatter
-  (let ((fmtr 
+  (let ((fmtr
          ;; TODO refactor
          (let ((buf1 (current-buffer)))
            (with-temp-buffer
