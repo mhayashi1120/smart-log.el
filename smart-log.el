@@ -4,7 +4,7 @@
 ;; Keywords: applications, development
 ;; URL: https://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
 ;; Emacs: todo GNU Emacs 22 or later
-;; Version: 0.0.0
+;; Version: 0.1.0
 ;; Package-Requires: ()
 
 ;; This program is free software; you can redistribute it and/or
@@ -27,13 +27,9 @@
 ;; * Put the following to your .emacs
 ;;
 ;;   (autoload 'smart-log-mode "smart-log"
-;;             "Major mode with intepretting miscellaneous time format in log file" t)
+;;             "Intepretting miscellaneous time format in log file" t)
 
-;; * If you want to revert automatically, put the following to your .emacs
-;;
-;;   (add-hook 'smart-log-mode-hook 'turn-on-auto-revert-tail-mode)
-
-;; * If you want open log file automatically `smart-log-mode', put the followings.
+;; * You may want to open log file automatically `smart-log-mode', put the followings.
 ;;
 ;;   ;; System log directory (on Debian)
 ;;   (add-to-list 'auto-mode-alist `("/var/log/" . smart-log-mode))
@@ -45,22 +41,28 @@
 ;;                '("\\.log\\(?:\\.[0-9]+\\)?\\(?:\\.\\(?:gz\\|bz2\\|xz\\)\\)?\\'"
 ;;                  . smart-log-mode))
 
+;; * You may want to revert tail of log automatically, put the following to your .emacs
+;;
+;;   (setq smart-log-auto-revert-tail t)
 
+;; * You can find huge log file:
+;;
+;;   M-x smart-log-find-file
 
 ;;; TODO:
-;; * grep with regexp or time range
-;; * too many log entry is appended slow down emacs, or crash..
-;; * (visited-file-modtime)
-;; * key of toggle auto read
-;; * smart-log-find-file
-;;   handling huge log file
-;; * inhibit save-buffer when restricted mode (huge file narrowing)
+;; * grep with regexp by date and date-time range
+;; * (?) key of toggle auto read
 ;; * disable auto-tail-revert if :paging prop is not indicate max byte
+;; * performance (e.g. a lot of jka call)
+;; * log file should not have exceed 1024 bytes per line.
+;; * activate region sequential logging date, improve guessed format.
 
 ;;; Code:
 
 (eval-when-compile
-  (require 'cl))
+  ;;TODO remove it
+  (require 'cl)
+  (require 'parse-time))
 
 (defgroup smart-log ()
   "Smart log viewer."
@@ -70,20 +72,27 @@
 (require 'view)
 
 ;;;
-;;;
+;;; Basic utility
 ;;;
 
-(defun smart-log--format-filesize (size)
-  (let ((s size)
-        (f (ftruncate size))
-        (units '(B KB MB GB TB EB)))
-    (while (> s 1024)
-      (setq f (/ (ftruncate s) 1024))
-      (setq s (lsh s -10))
-      (setq units (cdr units)))
-    (if (eq (car units) 'B)
-        (format "%dB" s)
-      (format "%0.1f%s" f (car units)))))
+(defun smart-log--filter-physical-file (file)
+  (let* ((jka-info (jka-compr-get-compression-info file))
+         (rawfile (if jka-info
+                      (file-local-copy file)
+                    file)))
+    rawfile))
+
+(defun smart-log--detect-coding-system (file)
+  (with-temp-buffer
+    (set-buffer-multibyte t)
+    (insert-file-contents file nil 0 4096)
+    last-coding-system-used))
+
+(defun smart-log--extract-year (time)
+  (nth 5 (decode-time time)))
+
+(defvar smart-log--plist nil)
+(make-variable-buffer-local 'smart-log--plist)
 
 ;;;
 ;;; Datetime deformat
@@ -95,7 +104,6 @@
     (:name tai64n :sample-fn smart-log-tai64n
            :convert-fn smart-log-tai64n->date)
     ;; (May 20 00:05:02 => 2012-05-20 00:05:02)
-    ;; TODO this format may indicate wrong year.
     ;;   when log file have entries that over a year.
     (:name rfctime :sample-fn smart-log-rfc822-time
            :convert-fn smart-log-rfc822-time->date)
@@ -122,13 +130,37 @@
     )
   "Considerable log format alist each item has (NAME REGION-FN TO-DATE-FN)
 NAME
-:sample-fn is called at beginning of line and return region of logged time in buffer.
+:sample-fn is called at beginning of line and return region of
+   logged time in buffer.
 :convert-fn accept one string arg and return `current-date' format.
 ")
 
 ;;
 ;; rfc822
 ;;
+
+(eval-and-compile
+  (defconst smart-log-rfc822-time-part-regexp
+    (let* ((ms (loop repeat 12 for m in parse-time-months collect (car m)))
+           (ws (loop repeat 7 for m in parse-time-weekdays collect (car m)))
+           (mr (regexp-opt ms))
+           (wr (regexp-opt ws))
+           (2d "[0-9]\\{1,2\\}")
+           (regexp
+            ;; ignore some line header characters.
+            ;; e.g. Nov  9 01:31:08
+            (concat
+             ;; day of the week
+             "\\(\\b" wr ", +\\)?"
+             ;; month name
+             "\\(\\b" mr "\\b\\)"
+             " +"
+             ;; days of month
+             2d
+             " "
+             ;; time part
+             2d ":" 2d ":" 2d)))
+      regexp)))
 
 (defconst smart-log-rfc822-time-regexp
   (eval-when-compile
@@ -143,22 +175,14 @@ NAME
             (concat
              "^"
              ;; skip max 16 chars
-             ".\\{,16\\}"
-             ;; day of the week
-             "\\(" wr ", +\\)?"
-             ;; month name
-             mr
-             " +"
-             ;; days of month
-             2d
-             " "
-             ;; time part
-             2d ":" 2d ":" 2d)))
+             ".\\{,16\\}?"
+             smart-log-rfc822-time-part-regexp)))
       regexp)))
 
 (defun smart-log-rfc822-time ()
   (and (looking-at smart-log-rfc822-time-regexp)
-       (cons (match-beginning 0) (match-end 0))))
+       (cons (or (match-beginning 1) (match-beginning 2))
+             (match-end 0))))
 
 (defun smart-log-rfc822-time->date (str)
   (destructuring-bind (sec min hour day month year . rest)
@@ -221,22 +245,28 @@ NAME
 ;; General date
 ;;
 
-(defconst smart-log-general-date-regexp
-  (eval-when-compile
+(eval-and-compile
+  (defconst smart-log-general-date-part-regexp
     (let ((2d "[0-9]\\{1,2\\}"))
       (concat
-       ;; skip 16 chars
-       ".\\{,16\\}"
        ;; date part
-       "\\([0-9]\\{4\\}\\)[-/.]\\(" 2d "\\)[-/.]\\(" 2d "\\)"
-       "[ \t]+"
+       "\\b\\([0-9]\\{4\\}\\)[-/.]\\(" 2d "\\)[-/.]\\(" 2d "\\)\\b"
+       ;; skip general separator
+       "[ \t,:;]+"
        ;; time part
        "\\(" 2d "\\):\\(" 2d "\\)\\(?::\\(" 2d "\\)\\)?"
        "\\(?:[:.]\\([0-9]+\\)\\)?"))))
 
+(defconst smart-log-general-date-regexp
+  (eval-when-compile
+    (concat
+     ;; skip 16 chars
+     ".\\{,16\\}?"
+     smart-log-general-date-part-regexp)))
+
 (defun smart-log-general-date ()
   (and (looking-at smart-log-general-date-regexp)
-       (cons (match-beginning 0) (match-end 0))))
+       (cons (match-beginning 1) (match-end 0))))
 
 (defun smart-log-general-date->date (str)
   (and (string-match smart-log-general-date-regexp str)
@@ -251,23 +281,29 @@ NAME
               (sec (funcall getter 6)))
          (encode-time sec min hour day month year))))
 
-;; http://www.kanzaki.com/docs/html/dtf.html
-(defconst smart-log-general-locale-date-regexp
-  (eval-when-compile
+(eval-and-compile
+  (defconst smart-log-general-locale-date-part-regexp
     (let ((2d "[0-9]\\{1,2\\}"))
       (concat
-       ;; skip 16 chars
-       ".\\{,16\\}"
        ;; date part
-       "\\([0-9]\\{2,4\\}\\)[-/.]\\(" 2d "\\)[-/.]\\([0-9]\\{2,4\\}\\)"
-       "[ \t]+"
+       "\\b\\([0-9]\\{2,4\\}\\)[-/.]\\(" 2d "\\)[-/.]\\([0-9]\\{2,4\\}\\)\\b"
+       ;; skip general separator
+       "[ \t,:;]+"
        ;; time part
        "\\(" 2d "\\):\\(" 2d "\\)\\(?::\\(" 2d "\\)\\)?"
        "\\(?:[:.]\\([0-9]+\\)\\)?"))))
 
+;; http://www.kanzaki.com/docs/html/dtf.html
+(defconst smart-log-general-locale-date-regexp
+  (eval-when-compile
+    (concat
+     ;; skip 32 chars
+     ".\\{,32\\}?"
+     smart-log-general-locale-date-part-regexp)))
+
 (defun smart-log-general-locale-date ()
   (and (looking-at smart-log-general-locale-date-regexp)
-       (cons (match-beginning 0) (match-end 0))))
+       (cons (match-beginning 1) (match-end 0))))
 
 (defun smart-log-general-locale-date->date (str yi mi di)
   (and (string-match smart-log-general-locale-date-regexp str)
@@ -303,20 +339,21 @@ NAME
 
 (defconst smart-log--apache-error-log-re
   (eval-when-compile
-    (concat "\\["
-            "\\("
-            "[a-zA-Z]\\{3\\}"
-            " "
-            "[a-zA-Z]\\{3\\}"
-            " "
-            "[0-9]\\{1,2\\}"
-            " "
-            "[0-9:]+"
-            " "
-            "[0-9]\\{4\\}"
-            "\\)"
-            "\\]"
-            )))
+    (concat
+     "\\["
+     "\\("
+     "[a-zA-Z]\\{3\\}"
+     " "
+     "[a-zA-Z]\\{3\\}"
+     " "
+     "[0-9]\\{1,2\\}"
+     " "
+     "[0-9:]+"
+     " "
+     "[0-9]\\{4\\}"
+     "\\)"
+     "\\]"
+     )))
 
 (defun smart-log-apache-error-log ()
   ;;FIXME regexp
@@ -330,9 +367,18 @@ NAME
 ;; Common Log Format (CLF)
 ;;
 
+(defconst smart-log--clf-log-re
+  (eval-when-compile
+    ;;FIXME regexp is not correct...
+    (concat
+     ;; skip
+     ".\\{,64\\}"
+     "\\["
+     "\\([0-9]\\{1,2\\}/.../[0-9]\\{4\\}\\(?::[0-9]\\{2\\}\\)\\{3\\}.*?\\)"
+     "\\]")))
+
 (defun smart-log-clf-date ()
-  ;;FIXME regexp is not correct...
-  (and (looking-at ".\\{,64\\}\\[\\([0-9]\\{1,2\\}/.../[0-9]\\{4\\}\\(?::[0-9]\\{2\\}\\)\\{3\\}.*?\\)\\]")
+  (and (looking-at smart-log--clf-log-re)
        (cons (match-beginning 1) (match-end 1))))
 
 (defun smart-log-clf-date->date (str)
@@ -381,15 +427,20 @@ NAME
 (defun smart-log--valid-formatters ()
   ;; 1. log file MUST start with LOG line.
   (goto-char (point-min))
-  (loop for fmtr in smart-log--unformatters
-        if (funcall (plist-get fmtr :sample-fn))
-        collect fmtr))
+  (remq
+   nil
+   (mapcar
+    (lambda (fmtr)
+      (and (funcall (plist-get fmtr :sample-fn))
+           fmtr))
+    smart-log--unformatters)))
 
 (defun smart-log--score-formats (formatters)
-  (loop for fmtr in formatters
-        collect
-        (let ((score (smart-log--score-formatter fmtr)))
-          (cons score fmtr))))
+  (mapcar
+   (lambda (fmtr)
+     (let ((score (smart-log--score-formatter fmtr)))
+       (cons score fmtr)))
+   formatters))
 
 (defun smart-log--score-formatter (formatter)
   (let ((scores '(1))
@@ -412,8 +463,10 @@ NAME
     ;; DIFF-SEC    := ABS(FILETIME - LOG-LAST-ENTRY)
     ;; PROBABILITY := 1 - (DIFF-SEC / 120)^2
     ;; SCORE       := MAX(PROBABILITY, 0.5)
-    (let ((diff (abs (- (float-time last) mtime))))
-      (push (max (- 1 (expt (/ diff 120.0) 2)) 0.5) scores))
+    (let* ((diff (abs (- (float-time last) mtime)))
+           (probability (- 1 (expt (/ diff 120.0) 2)))
+           (score (max probability 0.5)))
+      (push score scores))
     ;;TODO 3. check order of log entry times.
     ;; 2. valid log line approprivate count.
     (push (/ valid (ftruncate all)) scores)
@@ -424,7 +477,7 @@ NAME
 ;;    that line MUST have time string in first 1024 bytes.
 ;; 2. lines should have valid date appropriate count.
 ;; 3. lines have been nearly sorted by date.
-;;    log time format may be deficit year 
+;;    log time format may be deficient year part.
 ;; 4. log file highly probably end with log entry that
 ;;    have time nearly equal file mtime.
 (defun smart-log--compute-formatter ()
@@ -440,16 +493,17 @@ NAME
 
 (defun smart-log--compute-from-file (file)
   (with-temp-buffer
-    (let* ((attr (file-attributes file))
+    (let* ((rawfile (smart-log--filter-physical-file file))
+           (attr (file-attributes rawfile))
            (size (nth 7 attr))
            (mtime (nth 5 attr))
            (head-end 2048)
            (tail-beg (max (- size 4096) head-end)))
-      (insert-file-contents file nil 0 head-end)
+      (insert-file-contents rawfile nil 0 head-end)
       (goto-char (point-max))
       (delete-region (point-at-bol) (point-max))
       (when (> size tail-beg)
-        (insert-file-contents file nil tail-beg size))
+        (insert-file-contents rawfile nil tail-beg size))
       (setq smart-log--plist (list :mtime (float-time mtime)))
       (smart-log--compute-formatter))))
 
@@ -470,7 +524,11 @@ NAME
               (let ((tail-beg (max (point-at-bol -100) head-end)))
                 (append-to-buffer compute-buf tail-beg (point-max))))
             (setq mtime (visited-file-modtime)))))
-      (setq smart-log--plist (list :mtime (float-time mtime)))
+      (setq smart-log--plist
+            (list :mtime
+                  (float-time mtime)
+                  :base-year
+                  (smart-log--extract-year mtime)))
       (smart-log--compute-formatter))))
 
 ;;;
@@ -529,19 +587,26 @@ This option is passed to `format-time-string'."
   :type 'boolean)
 
 (defcustom smart-log-mode-hook nil
-  "Run end of `smart-log-mode'.
-
-\(add-hook 'smart-log-mode-hook 'turn-on-auto-revert-tail-mode)
- TODO or create some option? only last page is valid..
-"
+  "Run end of `smart-log-mode'."
   :group 'smart-log
   :type 'boolean)
 
-;;TODO default value
-(defcustom smart-log-paging-chunk-size 500
+(defcustom smart-log-auto-revert-tail nil
+  "Run `turn-on-auto-revert-tail-mode' when `smart-log-mode' is on."
+  :group 'smart-log
+  :type 'boolean)
+
+(defcustom smart-log-paging-chunk-size 5000000
   "Chunk size bytes when `smart-log-chunk-mode' is on."
   :group 'smart-log
   :type 'integer)
+
+;;
+;; Format
+;;
+
+(defun smart-log--format-filesize (size)
+  (file-size-human-readable size))
 
 ;;
 ;; Mode specific
@@ -549,31 +614,41 @@ This option is passed to `format-time-string'."
 
 (defvar smart-log--mode-line
   '("Log"
-    (:eval (or (let ((type (plist-get smart-log--plist :name)))
-                 (and type
-                      (propertize
-                       (format " [%s]" type)
-                       'face 'smart-log-time-face)))
-               ""))
-    (:eval (or (let ((range (plist-get smart-log--plist :paging)))
-                 (and range
-                      (propertize
-                       (format " %s - %s"
-                               (or (and (car range)
-                                        (smart-log--format-filesize (car range)))
-                                   "")
-                               (or (and (cdr range)
-                                        (smart-log--format-filesize (cdr range)))
-                                   ""))
-                       'face 'smart-log-paging-face)))
-               ""))
-    (:eval (and buffer-file-name
-                (let* ((attr (file-attributes buffer-file-name))
-                       (size (nth 7 attr)))
-                  (propertize
-                   (format ":%s"
-                           (smart-log--format-filesize size))
-                   'face 'smart-log-file-size-face))))))
+    (:eval
+     (or (let ((type (plist-get smart-log--plist :name)))
+           (and type
+                (propertize
+                 (format " [%s]" type)
+                 'face 'smart-log-time-face)))
+         ""))
+    (:eval
+     (or (let ((range (plist-get smart-log--plist :paging)))
+           (and range
+                (propertize
+                 (format " %s - %s"
+                         (or (and (car range)
+                                  (smart-log--format-filesize (car range)))
+                             "")
+                         (or (and (cdr range)
+                                  (smart-log--format-filesize (cdr range)))
+                             ""))
+                 'face 'smart-log-paging-face)))
+         ""))
+    (:eval
+     (let (info)
+       (cond
+        ((not buffer-file-name))
+        ((setq info (jka-compr-get-compression-info buffer-file-name))
+         (let ((jka-prog (jka-compr-info-compress-program info)))
+           (propertize (format ":%s" jka-prog)
+                       'face 'smart-log-file-size-face)))
+        (t
+         (let* ((attr (file-attributes buffer-file-name))
+                (size (nth 7 attr)))
+           (propertize
+            (format ":%s"
+                    (smart-log--format-filesize size))
+            'face 'smart-log-file-size-face))))))))
 
 (defvar smart-log-mode-map nil
   "Keymap for smart-log mode.")
@@ -581,7 +656,7 @@ This option is passed to `format-time-string'."
 (unless smart-log-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map view-mode-map)
-    
+
     (define-key map "\C-c\C-t" 'smart-log-toggle-time-format)
 
     (setq smart-log-mode-map map)))
@@ -597,9 +672,10 @@ This option is passed to `format-time-string'."
 (make-variable-buffer-local 'smart-log--show-format)
 
 (defun smart-log--overlay-at (point)
-  (loop for o in (overlays-at point)
-        if (overlay-get o 'smart-log-time)
-        return o))
+  (catch 'return
+    (dolist (o (overlays-at point))
+      (when (overlay-get o 'smart-log-time)
+        (throw 'return o)))))
 
 (defun smart-log--format-current-line (sample-fn convert-fn)
   (let ((region (funcall sample-fn)))
@@ -620,8 +696,6 @@ This option is passed to `format-time-string'."
           (error nil)))))
   (forward-line 1))
 
-;;TODO dos/unix/mac
-;;TODO add test
 (defun smart-log--find-bol (file maybe-start)
   (catch 'done
     (when (= maybe-start 0)
@@ -630,68 +704,100 @@ This option is passed to `format-time-string'."
       (set-buffer-multibyte nil)
       (let ((coding-system-for-read 'binary))
         (let ((start (- maybe-start 1))
-              (end (+ maybe-start 16)))
+              ;; FIXME: may misunderstand eol-style if
+              ;; there is too long line.
+              (end (+ maybe-start 1024))
+              goto-bol)
           (insert-file-contents file nil start end)
-          (when (eolp)
+          (forward-char)
+          (cond
+           ;; FIXME: mac eol-style
+           ((not (string-match "\n" (buffer-string)))
+            ;; guessed as mac eol style
+            (when (eq (char-after) '?\r)
+              (throw 'done maybe-start))
+            (setq goto-bol (lambda ()
+                             (and (re-search-backward "\r" nil t)
+                                  (progn (forward-char) t)))))
+           ((eolp)
             (throw 'done maybe-start))
+           (t
+            (setq goto-bol (lambda ()
+                             (and (re-search-backward "\n" nil t)
+                                  (progn (forward-char) t))))))
           (setq end start)
           (setq start (max (- end 256) 0))
           (while (> end 0)
             (insert-file-contents file nil start end)
-            (goto-char (- end start))
-            (when (/= (point-at-bol) (point-min))
-              (throw 'done (+ start (1- (point-at-bol)))))
+            ;; goto end of insert. buffer `point' is start from 1
+            (goto-char (1+ (- end start)))
+            (when (funcall goto-bol)
+              (throw 'done (+ start (1- (point)))))
             (goto-char (point-min))
             (setq start (- start 256))
             (setq end (- end 256))))
         0))))
 
-;;start must be a bol
-(defun smart-log--read-file (start &optional maybe-end replace)
+;; Emacs lowlevel api `insert-file-contents' return char
+;; count of inserted. not bytes. To handle as byte count
+;; define such pretty complex procedure
+;; START must be a bol
+(defun smart-log--load-log (start &optional maybe-end)
   (let* ((inhibit-read-only t)
          (buffer-undo-list t)
          (tramp-cache-inhibit-cache t)
-         (file buffer-file-name)
-         (attr (file-attributes file))
+         (rawfile (smart-log--filter-physical-file buffer-file-name))
+         (attr (file-attributes rawfile))
          (modtime (nth 5 attr))
+         (log-size (nth 7 attr))
          (buf (current-buffer))
+         (multibytep enable-multibyte-characters)
          (end
-          (if maybe-end
-              (min maybe-end (nth 7 attr))
-            (nth 7 attr)))
+          (cond
+           ((not maybe-end)
+            log-size)
+           (t
+            (min maybe-end log-size))))
          ;; suppress visiting file warnings
          (buffer-file-name nil)
          (coding-system buffer-file-coding-system))
+    (when (< start 0)
+      (let* ((maybe-start (max (min (+ log-size start) end) 0))
+             (bol-start (smart-log--find-bol rawfile maybe-start)))
+        (setq start bol-start)))
     (cond
-     ((< start 0)
-      (signal 'args-out-of-range (list start)))
      ((> start end)
       (signal 'args-out-of-range (list start end)))
      ((= start end))                    ; simply ignore
      (t
-      (when replace
-        (let ((inhibit-read-only t))
-          (erase-buffer)))
+      (let ((inhibit-read-only t))
+        (erase-buffer))
       (with-temp-buffer
         (set-buffer-multibyte nil)
         (let ((coding-system-for-read 'binary))
           ;; `insert-file-contents' BEG start from 0 to END by byte.
           ;; return value is inserted char, not byte.
-          (insert-file-contents file nil start end))
+          (insert-file-contents rawfile nil start end))
         (goto-char (point-max))
-        (unless (bolp)
-          (let ((decrease (- (point-max) (point-at-bol))))
-            (delete-region (point-at-bol) (point-max))
-            (setq end (- end decrease))))
-        (decode-coding-region (point-min) (point-max) coding-system)
+        ;; FIXME detecting eol stype ugly way
+        (cond
+         ((or (re-search-backward "\n" nil t)
+              (re-search-backward "\r" nil t))
+          (let ((decrease (- (point-max) (1+ (point)))))
+            (delete-region (1+ (point)) (point-max))
+            (setq end (- end decrease)))))
+        (when multibytep
+          (set-buffer-multibyte t)
+          (decode-coding-region (point-min) (point-max) coding-system))
         (append-to-buffer buf (point-min) (point-max)))))
     (set-visited-file-modtime modtime)
+    (set-buffer-modified-p nil)
     (plist-put smart-log--plist :mtime (float-time modtime))
     (let ((range (plist-get smart-log--plist :paging)))
       (setcar range start)
       (setcdr range end))))
 
-(defun smart-log-redisplay-time ()
+(defun smart-log--clear-display ()
   (remove-overlays nil nil 'smart-log-time t)
   (setq smart-log--formatted-region nil))
 
@@ -704,18 +810,16 @@ This option is passed to `format-time-string'."
                   ;; kill timer if smart-log-mode buffer is not exists.
                   (cancel-function-timers 'smart-log--delayed-format))))
 
-(defvar smart-log--plist nil)
-(make-variable-buffer-local 'smart-log--plist)
-
 (defun smart-log--prepare-file-plist (file)
   (let* ((attr (file-attributes file))
          (mtime (nth 5 attr))
-         (year (nth 5 (decode-time (nth 5 attr)))))
+         (year (smart-log--extract-year (nth 5 attr)))
+         (size buffer-saved-size))
     (setq smart-log--plist
           (append
            (list :mtime (float-time mtime)
                  :base-year year
-                 :paging (cons 0 nil))
+                 :paging (cons 0 size))
            (smart-log--compute-from-buffer (current-buffer))))))
 
 (defun smart-log-merge-properties (prop1 prop2)
@@ -754,7 +858,6 @@ This option is passed to `format-time-string'."
             (format ".%09.0f" (+ (* (ftruncate (or mhigh 0)) ?\x10000)
                                  (or mlow 0)))))))))
 
-;;TODO unadvice when unload-feature
 (defadvice auto-revert-tail-handler
     (after smart-log-auto-revert-tail () activate)
   (ignore-errors
@@ -763,6 +866,13 @@ This option is passed to `format-time-string'."
       (let ((range (plist-get smart-log--plist :paging)))
         (setcdr range auto-revert-tail-pos)))))
 
+;; for revert-buffer--default
+(defun smart-log--after-revert-function ()
+  (smart-log--clear-display)
+  (plist-put smart-log--plist :mtime (float-time (visited-file-modtime)))
+  (let ((range (plist-get smart-log--plist :paging)))
+    (setcdr range buffer-saved-size)))
+
 ;;
 ;; Command
 ;;
@@ -770,31 +880,40 @@ This option is passed to `format-time-string'."
 (defvar smart-log-chunk-mode-map nil)
 (unless smart-log-chunk-mode-map
   (let ((map (make-sparse-keymap)))
-    
+
     (define-key map "\C-c\C-b" 'smart-log-backward-page)
     (define-key map "\C-c\C-f" 'smart-log-forward-page)
-    
+
     (setq smart-log-chunk-mode-map map)))
 
+(defun smart-log-chunk-mode-inhibit-write ()
+  (error "This buffer is chunked"))
+
 (define-minor-mode smart-log-chunk-mode
-  "" nil "[Chunked]" smart-log-chunk-mode-map
+  "Chunked log file to see huge log file. Do not call manually this mode."
+  nil "[Chunked]" smart-log-chunk-mode-map
   (cond
    ((not (derived-mode-p 'smart-log-mode))
+    (message "Not a valid major-mode.")
     (smart-log-chunk-mode -1))
-   (smart-log-chunk-mode
-    ;;TODO setcdr range
-    )
+   ((not smart-log-chunk-mode)
+    (remove-hook 'write-contents-functions
+                 'smart-log-chunk-mode-inhibit-write t)
+    ;; show all file contents
+    (let ((file buffer-file-name))
+      (kill-buffer (current-buffer))
+      (find-file file)))
    (t
-    )))
+    (add-hook 'write-contents-functions
+              'smart-log-chunk-mode-inhibit-write nil t))))
 
-;;TODO open file  -> smart-log-mode auto-mode -> on chunk-mode range cdr is null
 (defun smart-log-forward-page ()
   "Forward chunked page follow `smart-log-paging-chunk-size'."
   (interactive)
   (let* ((range (plist-get smart-log--plist :paging))
          (start (cdr range))
          (end (+ (cdr range) smart-log-paging-chunk-size)))
-    (smart-log--read-file start end t)))
+    (smart-log--load-log start end)))
 
 (defun smart-log-backward-page ()
   "Backward chunked page follow `smart-log-paging-chunk-size'."
@@ -806,28 +925,33 @@ This option is passed to `format-time-string'."
          (start (smart-log--find-bol file (max may-begin 0))))
     (if (<= end start)
         (message "No more previous page")
-      (smart-log--read-file start end t))))
+      (smart-log--load-log start end))))
 
 ;;;###autoload
-(defun smart-log-find-file (file)
-  (interactive "fLog File: ")
+(defun smart-log-find-file (file &optional from-front)
+  "Open huge log FILE with chunked. See `smart-log-chunk-mode'
+If optional arg FROM-FRONT non-nil means open log from beginning of file."
+  (interactive "fLog File: \nP")
   (unless (file-exists-p file)
     (error "Not a log file"))
   (let ((buffer (get-file-buffer file)))
     (unless buffer
       (setq buffer (create-file-buffer file))
-      ;;TODO
-      (let* ((coding-system 'utf-8)
+      (let* ((coding-system (smart-log--detect-coding-system file))
              (attr (file-attributes file))
              (modtime (nth 5 attr)))
         (with-current-buffer buffer
-          (set-visited-file-name file)
+          (let ((create-lockfiles nil))
+            (set-visited-file-name file))
           (set-visited-file-modtime modtime)
-          (smart-log-mode)
           (set-buffer-file-coding-system coding-system)
-          (smart-log--read-file 0 smart-log-paging-chunk-size t)
-          (smart-log-chunk-mode 1)
-          (set-buffer-modified-p nil))))
+          (smart-log-mode)
+          (cond
+           (from-front
+            (smart-log--load-log 0 smart-log-paging-chunk-size))
+           (t
+            (smart-log--load-log (- smart-log-paging-chunk-size))))
+          (smart-log-chunk-mode 1))))
     (switch-to-buffer buffer)))
 
 ;;;###autoload
@@ -848,8 +972,13 @@ This option is passed to `format-time-string'."
     (setq smart-log--show-format t)
     (add-hook 'kill-buffer-hook
               'smart-log--cleanup nil t)
+    ;; control default revert-buffer-function
+    (add-hook 'after-revert-hook
+              'smart-log--after-revert-function nil t)
     (setq buffer-read-only t)
     (smart-log--prepare-file-plist buffer-file-name)
+    (when smart-log-auto-revert-tail
+      (auto-revert-tail-mode 1))
     (cancel-function-timers 'smart-log--delayed-format)
     ;; delay after 0.5 second
     ;; Just after `find-file', `window-start' and `window-end' point to
@@ -860,10 +989,9 @@ This option is passed to `format-time-string'."
   "Revert all of log entries."
   (interactive)
   (let ((line (line-number-at-pos (point))))
-    (smart-log--read-file 0 nil t)
+    (smart-log--load-log 0)
     (goto-char (point-min))
-    (forward-line (1- line))
-    (set-buffer-modified-p nil)))
+    (forward-line (1- line))))
 
 (defun smart-log-switch-format ()
   "Switch logging time format manually."
@@ -880,7 +1008,7 @@ This option is passed to `format-time-string'."
                      return fmtr)))
     (setq smart-log--plist
           (smart-log-merge-properties smart-log--plist fmtr))
-    (smart-log-redisplay-time)))
+    (smart-log--clear-display)))
 
 (defun smart-log-toggle-time-format ()
   "Toggle between displaying time format or raw text."
@@ -895,6 +1023,18 @@ This option is passed to `format-time-string'."
         (and disp
              (overlay-put ov new disp)))
       (overlay-put ov old nil))))
+
+;;;
+;;; Unload
+;;;
+
+(defun smart-log-unload-function ()
+  (cancel-function-timers 'smart-log--delayed-format)
+  (loop for (func class name) in
+        '((auto-revert-tail-handler after smart-log-auto-revert-tail))
+        do (progn
+             (ad-disable-advice func class name)
+             (ad-update func))))
 
 (provide 'smart-log)
 
