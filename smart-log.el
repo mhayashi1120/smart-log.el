@@ -56,6 +56,7 @@
 ;; * performance (e.g. a lot of jka call)
 ;; * log file should not have exceed 1024 bytes per line.
 ;; * activate region sequential logging date, improve guessed format.
+;; * do not trust `buffer-saved-size'
 
 ;;; Code:
 
@@ -164,12 +165,7 @@ NAME
 
 (defconst smart-log-rfc822-time-regexp
   (eval-when-compile
-    (let* ((ms (loop repeat 12 for m in parse-time-months collect (car m)))
-           (ws (loop repeat 7 for m in parse-time-weekdays collect (car m)))
-           (mr (regexp-opt ms))
-           (wr (regexp-opt ws))
-           (2d "[0-9]\\{1,2\\}")
-           (regexp
+    (let* ((regexp
             ;; ignore some line header characters.
             ;; e.g. Nov  9 01:31:08
             (concat
@@ -605,8 +601,23 @@ This option is passed to `format-time-string'."
 ;; Format
 ;;
 
-(defun smart-log--format-filesize (size)
-  (file-size-human-readable size))
+(if (fboundp 'file-size-human-readable)
+    (defun smart-log--format-filesize (file-size)
+      (file-size-human-readable file-size))
+
+  ;; From Emacs 24
+  (defun smart-log--format-filesize (file-size)
+    (let ((power 1024.0)
+          (post-fixes
+           ;; none, kilo, mega, giga, tera, peta, exa, zetta, yotta
+           (list "" "k" "M" "G" "T" "P" "E" "Z" "Y")))
+      (while (and (>= file-size power) (cdr post-fixes))
+        (setq file-size (/ file-size power)
+              post-fixes (cdr post-fixes)))
+      (format (if (> (mod file-size 1.0) 0.05)
+                  "%.1f"
+                "%.0f")
+              file-size))))
 
 ;;
 ;; Mode specific
