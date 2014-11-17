@@ -1,9 +1,9 @@
-;;; smart-log.el --- Major mode with intepretting miscellaneous time format in log file.
+;;; smart-log.el --- View log file mode with intepretting miscellaneous time format.
 
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
 ;; Keywords: applications, development
 ;; URL: https://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
-;; Emacs: todo GNU Emacs 22 or later
+;; Emacs: GNU Emacs 23 or later
 ;; Version: 0.1.0
 ;; Package-Requires: ()
 
@@ -24,15 +24,17 @@
 
 ;;; Commentary:
 
-;; * Put the following to your .emacs
+;; * Put the following to your .emacs:
 ;;
 ;;   (autoload 'smart-log-mode "smart-log"
-;;             "Intepretting miscellaneous time format in log file" t)
+;;             "View log file mode." t)
+;;   (autoload 'smart-log-find-file "smart-log"
+;;             "Open huge log FILE with chunked.")
 
-;; * You may want to open log file automatically `smart-log-mode', put the followings.
+;; * You may want to open log file automatically `smart-log-mode', put the followings:
 ;;
 ;;   ;; System log directory (on Debian)
-;;   (add-to-list 'auto-mode-alist `("/var/log/" . smart-log-mode))
+;;   (add-to-list 'auto-mode-alist `("\\`/var/log/" . smart-log-mode))
 ;;   ;; djb tool
 ;;   (add-to-list 'auto-mode-alist
 ;;                `("/@[a-f0-9]\\{24\\}\\.[su]\\'" . smart-log-mode))
@@ -41,22 +43,21 @@
 ;;                '("\\.log\\(?:\\.[0-9]+\\)?\\(?:\\.\\(?:gz\\|bz2\\|xz\\)\\)?\\'"
 ;;                  . smart-log-mode))
 
-;; * You may want to revert tail of log automatically, put the following to your .emacs
+;; * You may want to revert tail of log automatically, put the following to your .emacs:
 ;;
 ;;   (setq smart-log-auto-revert-tail t)
 
-;; * You can find huge log file:
+;; * You can find huge log file by:
 ;;
 ;;   M-x smart-log-find-file
 
 ;;; TODO:
 ;; * grep with regexp by date and date-time range
-;; * (?) key of toggle auto read
+;; * define-key of toggle auto tail revert
 ;; * disable auto-tail-revert if :paging prop is not indicate max byte
 ;; * performance (e.g. a lot of jka call)
-;; * log file should not have exceed 1024 bytes per line.
+;; * log file should not exceed 1024 bytes per line.
 ;; * activate region sequential logging date, improve guessed format.
-;; * do not trust `buffer-saved-size'
 
 ;;; Code:
 
@@ -84,6 +85,7 @@
     rawfile))
 
 (defun smart-log--detect-coding-system (file)
+  ;;TODO auto-coding-alist
   (with-temp-buffer
     (set-buffer-multibyte t)
     (insert-file-contents file nil 0 4096)
@@ -752,7 +754,8 @@ This option is passed to `format-time-string'."
 ;; Emacs lowlevel api `insert-file-contents' return char
 ;; count of inserted. not bytes. To handle as byte count
 ;; define such pretty complex procedure
-;; START must be a bol
+;; START allow negative value like `substring' from EOF
+;;   positive value must be a bol of file
 (defun smart-log--load-log (start &optional maybe-end)
   (let* ((inhibit-read-only t)
          (buffer-undo-list t)
@@ -779,7 +782,6 @@ This option is passed to `format-time-string'."
     (cond
      ((> start end)
       (signal 'args-out-of-range (list start end)))
-     ((= start end))                    ; simply ignore
      (t
       (let ((inhibit-read-only t))
         (erase-buffer))
@@ -792,7 +794,9 @@ This option is passed to `format-time-string'."
         (goto-char (point-max))
         ;; FIXME detecting eol stype ugly way
         (cond
+         ;; first, search LF in enough size of bytes
          ((or (re-search-backward "\n" nil t)
+              ;; search CR, this case should be mac EOL style
               (re-search-backward "\r" nil t))
           (let ((decrease (- (point-max) (1+ (point)))))
             (delete-region (1+ (point)) (point-max))
@@ -821,11 +825,18 @@ This option is passed to `format-time-string'."
                   ;; kill timer if smart-log-mode buffer is not exists.
                   (cancel-function-timers 'smart-log--delayed-format))))
 
+(defun smart-log--buffer-byte-size ()
+  (if buffer-file-coding-system
+      (length (encode-coding-string
+               (buffer-string)
+               buffer-file-coding-system))
+    (buffer-size)))
+
 (defun smart-log--prepare-file-plist (file)
   (let* ((attr (file-attributes file))
          (mtime (nth 5 attr))
          (year (smart-log--extract-year (nth 5 attr)))
-         (size buffer-saved-size))
+         (size (smart-log--buffer-byte-size)))
     (setq smart-log--plist
           (append
            (list :mtime (float-time mtime)
@@ -882,7 +893,7 @@ This option is passed to `format-time-string'."
   (smart-log--clear-display)
   (plist-put smart-log--plist :mtime (float-time (visited-file-modtime)))
   (let ((range (plist-get smart-log--plist :paging)))
-    (setcdr range buffer-saved-size)))
+    (setcdr range (smart-log--buffer-byte-size))))
 
 ;;
 ;; Command
@@ -930,7 +941,7 @@ This option is passed to `format-time-string'."
   "Backward chunked page follow `smart-log-paging-chunk-size'."
   (interactive)
   (let* ((range (plist-get smart-log--plist :paging))
-         (end (1- (car range)))
+         (end (car range))
          (may-begin (- (car range) smart-log-paging-chunk-size))
          (file buffer-file-name)
          (start (smart-log--find-bol file (max may-begin 0))))
@@ -962,13 +973,17 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
             (smart-log--load-log 0 smart-log-paging-chunk-size))
            (t
             (smart-log--load-log (- smart-log-paging-chunk-size))))
+          (setq smart-log--plist
+                (append
+                 smart-log--plist
+                 (smart-log--compute-from-buffer (current-buffer))))
           (smart-log-chunk-mode 1))))
     (switch-to-buffer buffer)))
 
 ;;;###autoload
 (define-derived-mode smart-log-mode nil
   nil
-  "Major mode to view log file"
+  "View log file mode with intepretting miscellaneous time format."
   (if (not (and buffer-file-name
                 (file-exists-p buffer-file-name)))
       ;; when opening 0 byte file temporarily
@@ -1046,6 +1061,10 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
         do (progn
              (ad-disable-advice func class name)
              (ad-update func))))
+
+;;;; Add general log filenames for `package'
+;;;###autoload(add-to-list 'auto-mode-alist `("/@[a-f0-9]\\{24\\}\\.[su]\\'" . smart-log-mode))
+;;;###autoload(add-to-list 'auto-mode-alist '("\\.log\\(?:\\.[0-9]+\\)?\\(?:\\.\\(?:gz\\|bz2\\|xz\\)\\)?\\'" . smart-log-mode))
 
 (provide 'smart-log)
 
