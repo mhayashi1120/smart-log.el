@@ -57,7 +57,8 @@
 ;; * disable auto-tail-revert if :paging prop is not indicate max byte
 ;; * performance (e.g. a lot of jka call)
 ;; * log file should not exceed 1024 bytes per line.
-;; * activate region sequential logging date, improve guessed format.
+;; * improve guess format procedure:
+;;       activate date text region by user own.
 
 ;;; Code:
 
@@ -539,23 +540,28 @@ NAME
 
 (defface smart-log-time-face
   '((t :inherit font-lock-constant-face))
-  "Face for logged time which is interpreted by smart-log algorithm.")
+  "Face for logged time which is interpreted by smart-log algorithm."
+  :group 'smart-log)
 
 (defface smart-log-paging-face
   '((t :inherit font-lock-variable-name-face))
-  "Face for region of showing the buffer.")
+  "Face for region of showing the buffer."
+  :group 'smart-log)
 
 (defface smart-log-file-size-face
   '((t :inherit font-lock-keyword-face))
-  "Face for region of showing the buffer.")
+  "Face for region of showing the buffer."
+  :group 'smart-log)
 
 (defface smart-log-error-face
   '((t :inherit font-lock-warning-face))
-  "Face for guessed error log.")
+  "Face for guessed error log."
+  :group 'smart-log)
 
 (defface smart-log-debug-face
   '((t :inherit shadow))
-  "Face for guessed debug log.")
+  "Face for guessed debug log."
+  :group 'smart-log)
 
 (defvar smart-log-error-face 'smart-log-error-face)
 (defvar smart-log-debug-face 'smart-log-debug-face)
@@ -702,9 +708,12 @@ This option is passed to `format-time-string'."
                    (ov (make-overlay start end))
                    (text (smart-log--format-time date)))
               (overlay-put ov 'smart-log-time t)
-              (if smart-log--show-format
-                  (overlay-put ov 'display text)
-                (overlay-put ov 'smart-log-hiden-display text))
+              (overlay-put ov 'smart-log-epoch (float-time date))
+              (cond
+               (smart-log--show-format
+                (overlay-put ov 'display text))
+               (t
+                (overlay-put ov 'smart-log-hiden-display text)))
               (overlay-put ov 'face 'smart-log-time-face))
           (error nil)))))
   (forward-line 1))
@@ -724,8 +733,10 @@ This option is passed to `format-time-string'."
           (insert-file-contents file nil start end)
           (forward-char)
           (cond
-           ;; FIXME: mac eol-style
-           ((not (string-match "\n" (buffer-string)))
+           ;; FIXME: detect mac eol-style
+           ((let ((contents (buffer-string)))
+              (and (not (string-match "\n" contents))
+                   (string-match "\r" contents)))
             ;; guessed as mac eol style
             (when (eq (char-after) '?\r)
               (throw 'done maybe-start))
