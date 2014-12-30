@@ -4,7 +4,7 @@
 ;; Keywords: applications, development
 ;; URL: https://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
 ;; Emacs: GNU Emacs 23 or later
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ()
 
 ;; This program is free software; you can redistribute it and/or
@@ -109,7 +109,7 @@
            :convert-fn smart-log-tai64n->date)
     ;; (May 20 00:05:02 => 2012-05-20 00:05:02)
     ;;   when log file have entries that over a year.
-    (:name rfctime :sample-fn smart-log-rfc822-time
+    (:name rfc822 :sample-fn smart-log-rfc822-time
            :convert-fn smart-log-rfc822-time->date)
     ;; (01/02/03 04:05:06 => 2001-02-03 04:05:06)
     (:name general-jp :sample-fn smart-log-general-locale-date
@@ -131,6 +131,11 @@
     ;; squid or else... (1337993229 => 2012-05-26 09:47:09)
     (:name epoch :sample-fn smart-log-epoch
            :convert-fn smart-log-epoch->date)
+    (:name fuzzy :sample-fn smart-log-fuzzy-date
+           :convert-fn smart-log-fuzzy-date->date
+           ;; this unformatter match to almost time format
+           ;; so decrease priority
+           :max-score 0.5)
     )
   "Considerable log format alist each item has (NAME REGION-FN TO-DATE-FN)
 NAME
@@ -155,7 +160,7 @@ NAME
             ;; e.g. Nov  9 01:31:08
             (concat
              ;; day of the week
-             "\\(\\b" wr ", +\\)?"
+             "\\(\\b" wr ",? +\\)?"
              ;; month name
              "\\(\\b" mr "\\b\\)"
              " +"
@@ -163,7 +168,10 @@ NAME
              2d
              " "
              ;; time part
-             2d ":" 2d ":" 2d)))
+             2d ":" 2d ":" 2d
+             "\\(?:"
+             " +[0-9]\\{4\\}"
+             "\\)?")))
       regexp)))
 
 (defconst smart-log-rfc822-time-regexp
@@ -173,15 +181,16 @@ NAME
             ;; e.g. Nov  9 01:31:08
             (concat
              "^"
-             ;; skip max 16 chars
-             ".\\{,16\\}?"
+             ;; non-greedy skip some chars
+             ".*?"
              smart-log-rfc822-time-part-regexp)))
       regexp)))
 
 (defun smart-log-rfc822-time ()
   (and (looking-at smart-log-rfc822-time-regexp)
-       (cons (or (match-beginning 1) (match-beginning 2))
-             (match-end 0))))
+       (list (or (match-beginning 1) (match-beginning 2))
+             (match-end 0)
+             nil)))
 
 (defun smart-log-rfc822-time->date (str)
   (destructuring-bind (sec min hour day month year . rest)
@@ -196,7 +205,7 @@ NAME
 
 (defun smart-log-epoch ()
   (and (looking-at "[0-9.]+")
-       (cons (match-beginning 0) (match-end 0))))
+       (list (match-beginning 0) (match-end 0) nil)))
 
 (defun smart-log-epoch->date (str)
   (seconds-to-time (string-to-number str)))
@@ -213,7 +222,7 @@ NAME
 (defun smart-log-tai64n ()
   ;; djb tool
   (and (looking-at smart-log-tai64n-regexp)
-       (cons (match-beginning 0) (match-end 0))))
+       (list (match-beginning 0) (match-end 0) nil)))
 
 (defun smart-log-tai64n->date (str)
   (let ((i1 (substring str 1 5))
@@ -259,13 +268,13 @@ NAME
 (defconst smart-log-general-date-regexp
   (eval-when-compile
     (concat
-     ;; skip 16 chars
-     ".\\{,16\\}?"
+     ;; non-greedy skip some chars
+     ".*?"
      smart-log-general-date-part-regexp)))
 
 (defun smart-log-general-date ()
   (and (looking-at smart-log-general-date-regexp)
-       (cons (match-beginning 1) (match-end 0))))
+       (list (match-beginning 1) (match-end 0) nil)))
 
 (defun smart-log-general-date->date (str)
   (and (string-match smart-log-general-date-regexp str)
@@ -296,13 +305,13 @@ NAME
 (defconst smart-log-general-locale-date-regexp
   (eval-when-compile
     (concat
-     ;; skip 32 chars
-     ".\\{,32\\}?"
+     ;; non-greedy skip some chars
+     ".*?"
      smart-log-general-locale-date-part-regexp)))
 
 (defun smart-log-general-locale-date ()
   (and (looking-at smart-log-general-locale-date-regexp)
-       (cons (match-beginning 1) (match-end 0))))
+       (list (match-beginning 1) (match-end 0) nil)))
 
 (defun smart-log-general-locale-date->date (str yi mi di)
   (and (string-match smart-log-general-locale-date-regexp str)
@@ -357,7 +366,7 @@ NAME
 (defun smart-log-apache-error-log ()
   ;;FIXME regexp
   (and (looking-at smart-log--apache-error-log-re)
-       (cons (match-beginning 1) (match-end 1))))
+       (list (match-beginning 1) (match-end 1) nil)))
 
 (defun smart-log-apache-error-log->date (str)
   (apply 'encode-time (parse-time-string str)))
@@ -378,7 +387,7 @@ NAME
 
 (defun smart-log-clf-date ()
   (and (looking-at smart-log--clf-log-re)
-       (cons (match-beginning 1) (match-end 1))))
+       (list (match-beginning 1) (match-end 1) nil)))
 
 (defun smart-log-clf-date->date (str)
   (let* ((data (split-string str "[]\\[/: ]" t))
@@ -409,17 +418,111 @@ NAME
       (* sign (* (+ min (* hour 60)) 60))))))
 
 ;;;
+;;; Fuzzy date
+;;;
+
+(eval-and-compile
+  (defconst smart-log-fuzzy-date-part-regexp
+    (let ((2d "\\([0-9]\\{1,2\\}\\)"))
+      (concat
+       ;; before time part
+       "\\(.\\{0,10\\}\\)"
+       "\\b" 2d ":" 2d ":" 2d "\\b"
+       ;; after time part
+       "\\(.\\{0,10\\}\\)"))))
+  
+(defconst smart-log-fuzzy-date-day-part-regexp
+  (eval-when-compile
+    "\\b\\(\\(?:[1-2]\\|0?\\)[0-9]\\|3[01]\\)\\b"))
+
+(defconst smart-log-fuzzy-date-month-part-regexp
+  (eval-when-compile
+    (regexp-opt (loop for m in parse-time-months collect (car m)) t)))
+
+(defconst smart-log-fuzzy-date-regexp
+  (eval-when-compile
+    (concat
+     ;; non-greedy skip some chars
+     ".*?"
+     smart-log-fuzzy-date-part-regexp)))
+
+(defun smart-log-fuzzy-date ()
+  (and (looking-at smart-log-fuzzy-date-regexp)
+       (let* ((before (match-string 1))
+              (year nil)
+              (month nil)
+              (day nil)
+              (base-start (match-beginning 2))
+              (base-end (match-end 4))
+              (start base-start)
+              (end base-end)
+              (hour (string-to-number (match-string 2)))
+              (min (string-to-number (match-string 3)))
+              (sec (string-to-number (match-string 4)))
+              (after (match-string 5))
+              (before-len (length before))
+              (after-len (length after))
+              (subst-match
+               (lambda (s)
+                 (concat
+                  (substring s 0 (match-beginning 0))
+                  (substring s (match-end 0)))))
+              (set-region
+               ;;TODO refactor
+               (lambda (s subexp)
+                 (cond
+                  ((eq s 'before)
+                   (setq start (- base-start (- before-len (match-beginning subexp)))))
+                  ((eq s 'after)
+                   (setq end (+ end (match-end subexp))))
+                  (t
+                   (assert "todo"))))))
+         (dolist (sym (list 'before 'after))
+           (unless month
+             (let ((remain (symbol-value sym)))
+               (when (let ((case-fold-search t))
+                       (string-match smart-log-fuzzy-date-month-part-regexp
+                                     remain))
+                 (let* ((month-nm (match-string 1 remain))
+                        (month-pair (assoc-string month-nm parse-time-months t)))
+                   (funcall set-region sym 0)
+                   (set sym (funcall subst-match remain))
+                   (setq month (cdr month-pair)))))))
+         (dolist (sym (list 'before 'after))
+           (unless year
+             (let ((remain (symbol-value sym)))
+               (when (string-match "\\b\\([0-9]\\{4\\}\\)\\b" remain)
+                 (setq year (string-to-number (match-string 1 remain)))
+                 (funcall set-region sym 0)
+                 (set sym (funcall subst-match remain))))))
+         (dolist (sym (list 'before 'after))
+           (unless day
+             (let ((remain (symbol-value sym)))
+               (when (string-match smart-log-fuzzy-date-day-part-regexp remain)
+                 (setq day (string-to-number (match-string 1 remain)))
+                 (funcall set-region sym 0)
+                 (set sym (funcall subst-match remain))))))
+         (unless year
+           (setq year (plist-get smart-log--plist :base-year)))
+         (and sec min hour day month year
+              (list start end (encode-time sec min hour day month year))))))
+
+(defun smart-log-fuzzy-date->date (obj)
+  obj)
+
+;;;
 ;;; Compute formatter
 ;;;
 
 (defun smart-log--line-date (sample-fn convert-fn)
-  (let ((region (funcall sample-fn)))
-    (when region
+  (let ((sample (funcall sample-fn)))
+    (when sample
       (condition-case nil
-          (let* ((start (car region))
-                 (end (cdr region))
-                 (str (buffer-substring start end))
-                 (date (funcall convert-fn str)))
+          (let* ((start (car sample))
+                 (end (cadr sample))
+                 (obj (or (nth 2 sample)
+                          (buffer-substring start end)))
+                 (date (funcall convert-fn obj)))
             date)
         (error nil)))))
 
@@ -445,6 +548,7 @@ NAME
   (let ((scores '(1))
         (sample-fn (plist-get formatter :sample-fn))
         (convert-fn (plist-get formatter :convert-fn))
+        (coeff (or (plist-get formatter :max-score) 1))
         (mtime (plist-get smart-log--plist :mtime))
         (valid 0)
         (all 0)
@@ -469,6 +573,7 @@ NAME
     ;;TODO 3. check order of log entry times.
     ;; 2. valid log line approprivate count.
     (push (/ valid (ftruncate all)) scores)
+    (push coeff scores)
     (apply '* scores)))
 
 ;; `smart-log' guess time format by following assumption:
@@ -697,14 +802,15 @@ This option is passed to `format-time-string'."
         (throw 'return o)))))
 
 (defun smart-log--format-current-line (sample-fn convert-fn)
-  (let ((region (funcall sample-fn)))
-    (when region
-      (unless (smart-log--overlay-at (car region))
+  (let ((sample (funcall sample-fn)))
+    (when sample
+      (unless (smart-log--overlay-at (car sample))
         (condition-case nil
-            (let* ((start (car region))
-                   (end (cdr region))
-                   (str (buffer-substring start end))
-                   (date (funcall convert-fn str))
+            (let* ((start (car sample))
+                   (end (cadr sample))
+                   (obj (or (nth 2 sample)
+                            (buffer-substring start end)))
+                   (date (funcall convert-fn obj))
                    (ov (make-overlay start end))
                    (text (smart-log--format-time date)))
               (overlay-put ov 'smart-log-time t)
@@ -1071,7 +1177,8 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
         '((auto-revert-tail-handler after smart-log-auto-revert-tail))
         do (progn
              (ad-disable-advice func class name)
-             (ad-update func))))
+             (ad-update func)))
+  nil)
 
 ;;;; Add general log filenames for `package'
 ;;;###autoload(add-to-list 'auto-mode-alist `("/@[a-f0-9]\\{24\\}\\.[su]\\'" . smart-log-mode))
