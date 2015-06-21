@@ -2,9 +2,9 @@
 
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
 ;; Keywords: applications, development
-;; URL: https://github.com/mhayashi1120/smart-log.el/raw/master/smart-log.el
+;; URL: https://github.com/mhayashi1120/smart-log.el
 ;; Emacs: GNU Emacs 23 or later
-;; Version: 0.2.0
+;; Version: 0.2.1
 ;; Package-Requires: ()
 
 ;; This program is free software; you can redistribute it and/or
@@ -682,7 +682,8 @@ NAME
                 (regexp-opt '("error" "warning" "warn" "caution" "fatal") t)
                 "\\b")
        0 smart-log-error-face)
-      ("\\bdebug\\b" 0 smart-log-debug-face))))
+      ("\\bdebug\\b" 0 smart-log-debug-face)
+      ("\\btrace\\b" 0 smart-log-debug-face))))
 
 ;;
 ;; Customize
