@@ -4,8 +4,8 @@
 ;; Keywords: applications, development
 ;; URL: https://github.com/mhayashi1120/smart-log.el
 ;; Emacs: GNU Emacs 23 or later
-;; Version: 0.2.1
-;; Package-Requires: ()
+;; Version: 0.3.0
+;; Package-Requires: ((cl-lib "0.3"))
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -67,14 +67,13 @@
 ;;; Code:
 
 (eval-when-compile
-  ;;TODO remove it
-  (require 'cl)
   (require 'parse-time))
 
 (defgroup smart-log ()
   "Smart log viewer."
   :group 'applications)
 
+(require 'cl-lib)
 (require 'parse-time)
 (require 'view)
 
@@ -154,8 +153,8 @@ NAME
 
 (eval-and-compile
   (defconst smart-log-rfc822-time-part-regexp
-    (let* ((ms (loop repeat 12 for m in parse-time-months collect (car m)))
-           (ws (loop repeat 7 for m in parse-time-weekdays collect (car m)))
+    (let* ((ms (cl-loop repeat 12 for m in parse-time-months collect (car m)))
+           (ws (cl-loop repeat 7 for m in parse-time-weekdays collect (car m)))
            (mr (regexp-opt ms))
            (wr (regexp-opt ws))
            (2d "[0-9]\\{1,2\\}")
@@ -197,7 +196,7 @@ NAME
              nil)))
 
 (defun smart-log-rfc822-time->date (str)
-  (destructuring-bind (sec min hour day month year . rest)
+  (cl-destructuring-bind (sec min hour day month year . rest)
       (parse-time-string str)
     (encode-time sec min hour day month
                  (or year
@@ -441,7 +440,7 @@ NAME
 
 (defconst smart-log-fuzzy-date-month-part-regexp
   (eval-when-compile
-    (regexp-opt (loop for m in parse-time-months collect (car m)) t)))
+    (regexp-opt (cl-loop for m in parse-time-months collect (car m)) t)))
 
 (defconst smart-log-fuzzy-date-regexp
   (eval-when-compile
@@ -480,7 +479,7 @@ NAME
                   ((eq s 'after)
                    (setq end (+ end (match-end subexp))))
                   (t
-                   (assert "todo"))))))
+                   (cl-assert "todo"))))))
          (dolist (sym (list 'before 'after))
            (unless month
              (let ((remain (symbol-value sym)))
@@ -590,14 +589,14 @@ NAME
 ;;    have time nearly equal file mtime.
 (defun smart-log--compute-formatter ()
   (save-excursion
-    (loop with formatters = (smart-log--valid-formatters)
-          with max = 0
-          with fmtr = nil
-          for (score . formatter) in (smart-log--score-formats formatters)
-          do (when (> score max)
-               (setq max score
-                     fmtr formatter))
-          finally return fmtr)))
+    (cl-loop with formatters = (smart-log--valid-formatters)
+             with max = 0
+             with fmtr = nil
+             for (score . formatter) in (smart-log--score-formats formatters)
+             do (when (> score max)
+                  (setq max score
+                        fmtr formatter))
+             finally return fmtr)))
 
 (defun smart-log--compute-from-file (file)
   (with-temp-buffer
@@ -939,13 +938,13 @@ This option is passed to `format-time-string'."
   (setq smart-log--formatted-region nil))
 
 (defun smart-log--cleanup ()
-  (loop for b in (buffer-list)
-        if (and (not (eq b (current-buffer)))
-                (eq (buffer-local-value 'major-mode b) 'smart-log-mode))
-        return nil
-        finally (progn
-                  ;; kill timer if smart-log-mode buffer is not exists.
-                  (cancel-function-timers 'smart-log--delayed-format))))
+  (cl-loop for b in (buffer-list)
+           if (and (not (eq b (current-buffer)))
+                   (eq (buffer-local-value 'major-mode b) 'smart-log-mode))
+           return nil
+           finally (progn
+                     ;; kill timer if smart-log-mode buffer is not exists.
+                     (cancel-function-timers 'smart-log--delayed-format))))
 
 (defun smart-log--buffer-byte-size ()
   (if buffer-file-coding-system
@@ -967,12 +966,12 @@ This option is passed to `format-time-string'."
            (smart-log--compute-from-buffer (current-buffer))))))
 
 (defun smart-log-merge-properties (prop1 prop2)
-  (loop with prop = (copy-sequence prop1)
-        for ps on prop2 by (lambda (x) (cddr x))
-        do (let ((name (car ps))
-                 (value (cadr ps)))
-             (plist-put prop name value))
-        finally return prop))
+  (cl-loop with prop = (copy-sequence prop1)
+           for ps on prop2 by (lambda (x) (cddr x))
+           do (let ((name (car ps))
+                    (value (cadr ps)))
+                (plist-put prop name value))
+           finally return prop))
 
 ;; control display format all of `smart-log' buffer
 (defun smart-log--delayed-format ()
@@ -995,8 +994,8 @@ This option is passed to `format-time-string'."
   (concat
    (format-time-string smart-log-display-format date)
    (and smart-log-display-milliseconds
-        (let ((mhigh (caddr date))
-              (mlow (cadddr date)))
+        (let ((mhigh (cl-caddr date))
+              (mlow (cl-cadddr date)))
           (cond
            ((or mhigh mlow)
             (format ".%09.0f" (+ (* (ftruncate (or mhigh 0)) ?\x10000)
@@ -1150,10 +1149,10 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
                   smart-log--unformatters))
          (key (let ((completion-ignore-case t))
                 (completing-read "Format: " source nil t)))
-         (fmtr (loop with key = (intern key)
-                     for fmtr in smart-log--unformatters
-                     if (eq (plist-get fmtr :name) key)
-                     return fmtr)))
+         (fmtr (cl-loop with key = (intern key)
+                        for fmtr in smart-log--unformatters
+                        if (eq (plist-get fmtr :name) key)
+                        return fmtr)))
     (setq smart-log--plist
           (smart-log-merge-properties smart-log--plist fmtr))
     (smart-log--clear-display)))
@@ -1162,7 +1161,7 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
   "Toggle between displaying time format or raw text."
   (interactive)
   (setq smart-log--show-format (not smart-log--show-format))
-  (destructuring-bind (new . old)
+  (cl-destructuring-bind (new . old)
       (if smart-log--show-format
           `(display . smart-log-hiden-display)
         `(smart-log-hiden-display . display))
@@ -1178,11 +1177,11 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
 
 (defun smart-log-unload-function ()
   (cancel-function-timers 'smart-log--delayed-format)
-  (loop for (func class name) in
-        '((auto-revert-tail-handler after smart-log-auto-revert-tail))
-        do (progn
-             (ad-disable-advice func class name)
-             (ad-update func)))
+  (cl-loop for (func class name) in
+           '((auto-revert-tail-handler after smart-log-auto-revert-tail))
+           do (progn
+                (ad-disable-advice func class name)
+                (ad-update func)))
   nil)
 
 ;;;; Add general log filenames for `package'
