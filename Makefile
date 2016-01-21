@@ -7,4 +7,5 @@ check: compile
 		-f ert-run-tests-batch-and-exit
 
 compile:
+	$(EMACS) --version
 	$(EMACS) -q -batch -f batch-byte-compile smart-log.el
