@@ -829,6 +829,7 @@ This option is passed to `format-time-string'."
   (forward-line 1))
 
 (defun smart-log--find-bol (file maybe-start)
+  "Get BOL position in FILE just before MAYBE-START."
   (catch 'done
     (when (= maybe-start 0)
       (throw 'done 0))
