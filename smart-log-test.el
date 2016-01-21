@@ -12,7 +12,7 @@
               )
          do (progn
               (let ((coding-system-for-write eol))
-                (write-region test-body nil file))
+                (write-region test-body nil file nil 'no-msg))
               (cl-loop for (arg res) in cases
                        do
                        (should (equal (smart-log--find-bol file arg) res)))))

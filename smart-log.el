@@ -841,7 +841,6 @@ This option is passed to `format-time-string'."
               (end (+ maybe-start 1024))
               goto-bol)
           (insert-file-contents file nil start end)
-          (forward-char)
           (cond
            ;; FIXME: detect mac eol-style
            ((let ((contents (buffer-string)))
