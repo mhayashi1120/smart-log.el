@@ -4,7 +4,7 @@
 ;; Keywords: applications, development
 ;; URL: https://github.com/mhayashi1120/smart-log.el
 ;; Emacs: GNU Emacs 23 or later
-;; Version: 0.3.0
+;; Version: 0.3.1
 ;; Package-Requires: ((cl-lib "0.3"))
 
 ;; This program is free software; you can redistribute it and/or
@@ -37,7 +37,7 @@
 ;;
 ;;     ;; System log directory (on Debian)
 ;;     (add-to-list 'auto-mode-alist `("\\`/var/log/" . smart-log-mode))
-;;     ;; djb tool
+;;     ;; daemontools (djb)
 ;;     (add-to-list 'auto-mode-alist
 ;;                  `("/@[a-f0-9]\\{24\\}\\.[su]\\'" . smart-log-mode))
 ;;     ;; General log filename and logrotated files.
@@ -140,10 +140,10 @@
            ;; so decrease priority
            :max-score 0.5)
     )
-  "Considerable log format alist each item has (NAME REGION-FN TO-DATE-FN)
-NAME
+  "To be possible log format alist each item has following properties.
+:name friendly name for user
 :sample-fn is called at beginning of line and return region of
-   logged time in buffer.
+   logged time in the buffer.
 :convert-fn accept one string arg and return `current-date' format.
 ")
 
@@ -575,7 +575,7 @@ NAME
       (push score scores))
     ;;TODO 3. check order of log entry times.
     ;; 2. valid log line approprivate count.
-    (push (/ valid (ftruncate all)) scores)
+    (push (/ valid (float all)) scores)
     (push coeff scores)
     (apply '* scores)))
 
