@@ -4,14 +4,19 @@
 
 -include env.mk
 
-EMACS ?= emacs
 NEEDED-PACKAGES ?=
-
-BATCH := $(EMACS) -Q -batch -L .
 
 EL := smart-log.el
 
 TEST_EL := smart-log-test.el
+
+##
+## Emacs
+##
+
+EMACS ?= emacs
+
+BATCH := $(EMACS) -Q -batch -L .
 
 ##
 ## package.el
