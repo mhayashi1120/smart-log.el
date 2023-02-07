@@ -1,11 +1,11 @@
-;;; smart-log.el --- View log file mode with intepretting miscellaneous time format.
+;;; smart-log.el --- View log file with pretty datetime format -*- lexical-binding: t -*-
 
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
-;; Keywords: applications, development
+;; Keywords: maint tools
 ;; URL: https://github.com/mhayashi1120/smart-log.el
 ;; Emacs: GNU Emacs 23 or later
-;; Version: 0.3.1
-;; Package-Requires: ((cl-lib "0.3"))
+;; Version: 0.4.0
+;; Package-Requires: ((cl-lib "0.3") (emacs "24.1"))
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -138,8 +138,7 @@
            :convert-fn smart-log-fuzzy-date->date
            ;; this unformatter match to almost time format
            ;; so decrease priority
-           :max-score 0.5)
-    )
+           :max-score 0.5))
   "To be possible log format alist each item has following properties.
 :name friendly name for user
 :sample-fn is called at beginning of line and return region of
@@ -210,8 +209,17 @@
   (and (looking-at "[0-9.]+")
        (list (match-beginning 0) (match-end 0) nil)))
 
-(defun smart-log-epoch->date (str)
-  (seconds-to-time (string-to-number str)))
+;; TODO just workaround fix.
+;; FIXME: package-lint just check `fboundp` as string before `time-convert`
+(cond
+ ((fboundp 'time-convert)
+  (defun smart-log-epoch->date (str)
+    (time-convert (string-to-number str) 'integer)))
+ ((fboundp 'seconds-to-time)
+  (defun smart-log-epoch->date (str)
+    (seconds-to-time (string-to-number str))))
+ (t
+  (error "Not a supported.")))
 
 ;;
 ;; tai64n (djb)
@@ -228,8 +236,8 @@
        (list (match-beginning 0) (match-end 0) nil)))
 
 (defun smart-log-tai64n->date (str)
-  (let ((i1 (substring str 1 5))
-        (i2 (substring str 5 9))
+  (let ((_i1 (substring str 1 5))
+        (_i2 (substring str 5 9))
         (i3 (substring str 9 13))
         (i4 (substring str 13 17))
         (i5 (substring str 17 21))
@@ -363,8 +371,7 @@
      " "
      "[0-9]\\{4\\}"
      "\\)"
-     "\\]"
-     )))
+     "\\]")))
 
 (defun smart-log-apache-error-log ()
   ;;FIXME regexp
@@ -433,7 +440,7 @@
        "\\b" 2d ":" 2d ":" 2d "\\b"
        ;; after time part
        "\\(.\\{0,10\\}\\)"))))
-  
+
 (defconst smart-log-fuzzy-date-day-part-regexp
   (eval-when-compile
     "\\b\\(\\(?:[1-2]\\|0?\\)[0-9]\\|3[01]\\)\\b"))
@@ -449,6 +456,7 @@
      ".*?"
      smart-log-fuzzy-date-part-regexp)))
 
+;; TODO just workaround fix for lexical-binding. need refactor
 (defun smart-log-fuzzy-date ()
   (and (looking-at smart-log-fuzzy-date-regexp)
        (let* ((before (match-string 1))
@@ -464,7 +472,6 @@
               (sec (string-to-number (match-string 4)))
               (after (match-string 5))
               (before-len (length before))
-              (after-len (length after))
               (subst-match
                (lambda (s)
                  (concat
@@ -473,38 +480,57 @@
               (set-region
                ;;TODO refactor
                (lambda (s subexp)
-                 (cond
-                  ((eq s 'before)
-                   (setq start (- base-start (- before-len (match-beginning subexp)))))
-                  ((eq s 'after)
-                   (setq end (+ end (match-end subexp))))
-                  (t
-                   (cl-assert "todo"))))))
+                 (cl-ecase s
+                   ((before)
+                    (setq start (- base-start (- before-len (match-beginning subexp)))))
+                   ((after)
+                    (setq end (+ end (match-end subexp))))))))
          (dolist (sym (list 'before 'after))
            (unless month
-             (let ((remain (symbol-value sym)))
+             (let ((remain (cl-ecase sym
+                             ((before) before)
+                             ((after) after))))
                (when (let ((case-fold-search t))
                        (string-match smart-log-fuzzy-date-month-part-regexp
                                      remain))
                  (let* ((month-nm (match-string 1 remain))
                         (month-pair (assoc-string month-nm parse-time-months t)))
                    (funcall set-region sym 0)
-                   (set sym (funcall subst-match remain))
+                   (let ((value (funcall subst-match remain)))
+                     (cl-ecase sym
+                       ((before)
+                        (setq before value))
+                       ((after)
+                        (setq after value))))
                    (setq month (cdr month-pair)))))))
          (dolist (sym (list 'before 'after))
            (unless year
-             (let ((remain (symbol-value sym)))
+             (let ((remain (cl-ecase sym
+                             ((before) before)
+                             ((after) after))))
                (when (string-match "\\b\\([0-9]\\{4\\}\\)\\b" remain)
                  (setq year (string-to-number (match-string 1 remain)))
                  (funcall set-region sym 0)
-                 (set sym (funcall subst-match remain))))))
+                 (let ((value (funcall subst-match remain)))
+                   (cl-ecase sym
+                     ((before)
+                      (setq before value))
+                     ((after)
+                      (setq after value))))))))
          (dolist (sym (list 'before 'after))
            (unless day
-             (let ((remain (symbol-value sym)))
+             (let ((remain (cl-ecase sym
+                             ((before) before)
+                             ((after) after))))
                (when (string-match smart-log-fuzzy-date-day-part-regexp remain)
                  (setq day (string-to-number (match-string 1 remain)))
                  (funcall set-region sym 0)
-                 (set sym (funcall subst-match remain))))))
+                 (let ((value (funcall subst-match remain)))
+                   (cl-ecase sym
+                     ((before)
+                      (setq before value))
+                     ((after)
+                      (setq after value))))))))
          (unless year
            (setq year (plist-get smart-log--plist :base-year)))
          (and sec min hour day month year
@@ -872,66 +898,70 @@ This option is passed to `format-time-string'."
             (setq end (- end 256))))
         0))))
 
+(defvar tramp-cache-inhibit-cache)
 ;; Emacs lowlevel api `insert-file-contents' return char
 ;; count of inserted. not bytes. To handle as byte count
 ;; define such pretty complex procedure
 ;; START allow negative value like `substring' from EOF
 ;;   positive value must be a bol of file
 (defun smart-log--load-log (start &optional maybe-end)
-  (let* ((inhibit-read-only t)
-         (buffer-undo-list t)
-         (tramp-cache-inhibit-cache t)
-         (rawfile (smart-log--filter-physical-file buffer-file-name))
-         (attr (file-attributes rawfile))
-         (modtime (nth 5 attr))
-         (log-size (nth 7 attr))
-         (buf (current-buffer))
-         (multibytep enable-multibyte-characters)
-         (end
-          (cond
-           ((not maybe-end)
-            log-size)
-           (t
-            (min maybe-end log-size))))
-         ;; suppress visiting file warnings
-         (buffer-file-name nil)
-         (coding-system buffer-file-coding-system))
-    (when (< start 0)
-      (let* ((maybe-start (max (min (+ log-size start) end) 0))
-             (bol-start (smart-log--find-bol rawfile maybe-start)))
-        (setq start bol-start)))
-    (cond
-     ((> start end)
-      (signal 'args-out-of-range (list start end)))
-     (t
-      (let ((inhibit-read-only t))
-        (erase-buffer))
-      (with-temp-buffer
-        (set-buffer-multibyte nil)
-        (let ((coding-system-for-read 'binary))
-          ;; `insert-file-contents' BEG start from 0 to END by byte.
-          ;; return value is inserted char, not byte.
-          (insert-file-contents rawfile nil start end))
-        (goto-char (point-max))
-        ;; FIXME detecting eol stype ugly way
+  (setq tramp-cache-inhibit-cache t)
+  (unwind-protect
+      (let* ((inhibit-read-only t)
+             (buffer-undo-list t)
+             (rawfile (smart-log--filter-physical-file buffer-file-name))
+             (attr (file-attributes rawfile))
+             (modtime (nth 5 attr))
+             (log-size (nth 7 attr))
+             (buf (current-buffer))
+             (multibytep enable-multibyte-characters)
+             (end
+              (cond
+               ((not maybe-end)
+                log-size)
+               (t
+                (min maybe-end log-size))))
+             ;; suppress visiting file warnings
+             (buffer-file-name nil)
+             (coding-system buffer-file-coding-system))
+        (when (< start 0)
+          (let* ((maybe-start (max (min (+ log-size start) end) 0))
+                 (bol-start (smart-log--find-bol rawfile maybe-start)))
+            (setq start bol-start)))
         (cond
-         ;; first, search LF in enough size of bytes
-         ((or (re-search-backward "\n" nil t)
-              ;; search CR, this case should be mac EOL style
-              (re-search-backward "\r" nil t))
-          (let ((decrease (- (point-max) (1+ (point)))))
-            (delete-region (1+ (point)) (point-max))
-            (setq end (- end decrease)))))
-        (when multibytep
-          (set-buffer-multibyte t)
-          (decode-coding-region (point-min) (point-max) coding-system))
-        (append-to-buffer buf (point-min) (point-max)))))
-    (set-visited-file-modtime modtime)
-    (set-buffer-modified-p nil)
-    (plist-put smart-log--plist :mtime (float-time modtime))
-    (let ((range (plist-get smart-log--plist :paging)))
-      (setcar range start)
-      (setcdr range end))))
+         ((> start end)
+          (signal 'args-out-of-range (list start end)))
+         (t
+          (let ((inhibit-read-only t))
+            (erase-buffer))
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (let ((coding-system-for-read 'binary))
+              ;; `insert-file-contents' BEG start from 0 to END by byte.
+              ;; return value is inserted char, not byte.
+              (insert-file-contents rawfile nil start end))
+            (goto-char (point-max))
+            ;; FIXME detecting eol stype ugly way
+            (cond
+             ;; first, search LF in enough size of bytes
+             ((or (re-search-backward "\n" nil t)
+                  ;; search CR, this case should be mac EOL style
+                  (re-search-backward "\r" nil t))
+              (let ((decrease (- (point-max) (1+ (point)))))
+                (delete-region (1+ (point)) (point-max))
+                (setq end (- end decrease)))))
+            (when multibytep
+              (set-buffer-multibyte t)
+              (decode-coding-region (point-min) (point-max) coding-system))
+            (append-to-buffer buf (point-min) (point-max)))))
+        (set-visited-file-modtime modtime)
+        (set-buffer-modified-p nil)
+        (plist-put smart-log--plist :mtime (float-time modtime))
+        (let ((range (plist-get smart-log--plist :paging)))
+          (setcar range start)
+          (setcdr range end)))
+    ;; TODO should restore
+    (setq tramp-cache-inhibit-cache nil)))
 
 (defun smart-log--clear-display ()
   (remove-overlays nil nil 'smart-log-time t)
@@ -998,7 +1028,7 @@ This option is passed to `format-time-string'."
               (mlow (cl-cadddr date)))
           (cond
            ((or mhigh mlow)
-            (format ".%09.0f" (+ (* (ftruncate (or mhigh 0)) ?\x10000)
+            (format ".%09.0f" (+ (* (ftruncate (float (or mhigh 0))) ?\x10000)
                                  (or mlow 0)))))))))
 
 (defadvice auto-revert-tail-handler
@@ -1034,7 +1064,9 @@ This option is passed to `format-time-string'."
 
 (define-minor-mode smart-log-chunk-mode
   "Chunked log file to see huge log file. Do not call manually this mode."
-  nil "[Chunked]" smart-log-chunk-mode-map
+  :init-value nil
+  :lighter "[Chunked]"
+  :keymap smart-log-chunk-mode-map
   (cond
    ((not (derived-mode-p 'smart-log-mode))
     (message "Not a valid major-mode.")
