@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  schedule:
+    - cron: '32 23 * * 1'
+  pull_request:
+  push:
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+        emacs_version:
+          - 28.1
+          - 28.2
+          - 29.1
+          - 29.2
+          - 29.3
+          - 29.4
+          - snapshot
+        include:
+          - os: ubuntu-latest
+            emacs_version: 24.5
+          - os: ubuntu-latest
+            emacs_version: 25.3
+          - os: ubuntu-latest
+            emacs_version: 26.3
+          - os: ubuntu-latest
+            emacs_version: 27.2
+    env:
+      EMACS_LINT_IGNORE: ${{ matrix.lint_ignore }}
+    steps:
+    - uses: purcell/setup-emacs@master
+      with:
+        version: ${{ matrix.emacs_version }}
+
+    - uses: actions/checkout@v3
+    - name: Run tests
+      run: './run-ci.sh'
