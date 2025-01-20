@@ -3,9 +3,9 @@
 ;; Author: Masahiro Hayashi <mhayashi1120@gmail.com>
 ;; Keywords: maint tools
 ;; URL: https://github.com/mhayashi1120/smart-log.el
-;; Emacs: GNU Emacs 23 or later
-;; Version: 0.4.0
-;; Package-Requires: ((cl-lib "0.3") (emacs "24.1"))
+;; Emacs: GNU Emacs 24.4 or later
+;; Version: 0.4.1
+;; Package-Requires: ((emacs "24.4"))
 
 ;; This program is free software; you can redistribute it and/or
 ;; modify it under the terms of the GNU General Public License as
@@ -1031,8 +1031,10 @@ This option is passed to `format-time-string'."
             (format ".%09.0f" (+ (* (ftruncate (float (or mhigh 0))) ?\x10000)
                                  (or mlow 0)))))))))
 
-(defadvice auto-revert-tail-handler
-    (after smart-log-auto-revert-tail () activate)
+(defvar auto-revert-tail-pos)
+
+(defun smart-log--ad-auto-revert-tail-handler ()
+  "After-Advice to `auto-revert-tail-handler'"
   (ignore-errors
     (when (derived-mode-p 'smart-log-mode)
       (plist-put smart-log--plist :mtime (float-time (visited-file-modtime)))
@@ -1204,16 +1206,17 @@ If optional arg FROM-FRONT non-nil means open log from beginning of file."
       (overlay-put ov old nil))))
 
 ;;;
-;;; Unload
+;;; Load / Unload
 ;;;
+
+(advice-add 'auto-revert-tail-handler :after #'smart-log--ad-auto-revert-tail-handler)
 
 (defun smart-log-unload-function ()
   (cancel-function-timers 'smart-log--delayed-format)
-  (cl-loop for (func class name) in
-           '((auto-revert-tail-handler after smart-log-auto-revert-tail))
+  (cl-loop for (sym func) in
+           '((auto-revert-tail-handler #'smart-log--ad-auto-revert-tail-handler))
            do (progn
-                (ad-disable-advice func class name)
-                (ad-update func)))
+                (advice-remove sym func)))
   nil)
 
 ;;;; Add general log filenames for `package'
