@@ -634,7 +634,7 @@
            (tail-beg (max (- size 4096) head-end)))
       (insert-file-contents rawfile nil 0 head-end)
       (goto-char (point-max))
-      (delete-region (point-at-bol) (point-max))
+      (delete-region (line-beginning-position) (point-max))
       (when (> size tail-beg)
         (insert-file-contents rawfile nil tail-beg size))
       (setq smart-log--plist (list :mtime (float-time mtime)))
@@ -650,11 +650,11 @@
             (widen)
             ;; first some lines
             (goto-char (point-min))
-            (let ((head-end (point-at-bol 3)))
+            (let ((head-end (line-beginning-position 3)))
               (append-to-buffer compute-buf (point-min) head-end)
               ;; last some lines
               (goto-char (point-max))
-              (let ((tail-beg (max (point-at-bol -100) head-end)))
+              (let ((tail-beg (max (line-beginning-position -100) head-end)))
                 (append-to-buffer compute-buf tail-beg (point-max))))
             (setq mtime (visited-file-modtime)))))
       (setq smart-log--plist
